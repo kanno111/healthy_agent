@@ -1,0 +1,10 @@
+# 将下面的 route 条目合并到 healthy-gateway 的
+# spring.cloud.gateway.server.webflux.routes 列表中。
+# 注意：这是合并片段，不能用它覆盖 Gateway 现有的完整 routes 配置。
+
+- id: healthy-agent
+  uri: lb://healthy-agent
+  order: -90
+  predicates:
+    - Path=/api/agent/**
+

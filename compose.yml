@@ -1,0 +1,21 @@
+name: healthy-agent
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: healthy-agent-frontend:local
+    container_name: healthy-agent-frontend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${AGENT_WEB_PORT:-8089}:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+

@@ -1,0 +1,17 @@
+package com.healthy.agent.security;
+
+import com.healthy.agent.common.ApiResponse;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/api/agent/patient/auth")
+public class PatientSessionController {
+    @GetMapping("/me")
+    public ApiResponse<AgentSession> currentPatient(HttpServletRequest request) {
+        long patientUserId = (Long) request.getAttribute(GatewayIdentityInterceptor.CURRENT_USER_ID);
+        return ApiResponse.success(AgentSession.authenticated(patientUserId, RequiredRoleInterceptor.PATIENT_ROLE));
+    }
+}
