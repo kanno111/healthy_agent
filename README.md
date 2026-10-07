@@ -5,6 +5,7 @@
 - `frontend`：Vue 3 + TypeScript + Vite，生产环境由 Nginx 提供静态页面。
 - `backend`：Java 21 + Spring Boot 4。
 - 登录认证：复用现有 `healthy-gateway` 和 `healthy-identity`，Agent 不保存账号或密码。
+- 本地联调：可启用 `local-dev` 内存 Token，在医院 Gateway/Identity 不启动时独立测试 Agent；后端脱离 Compose 启动时仍默认使用安全的 `gateway` 模式。
 - 角色边界：患者使用 `PATIENT`，知识库管理员复用现有 `STAFF`。
 
 ## 当前功能
@@ -17,10 +18,11 @@
 - 后端校验文件大小、扩展名和实际文件特征，将原始文件保存到 MinIO，并把成功文档的元数据保存到独立 MySQL 数据库。
 - Apache Tika 从 MinIO 提取文档文本，预览最多返回 12,000 个字符且不执行 OCR。
 - Agent 后端负责把全文切成最多 1,000 字符、相邻重叠 100 字符的 chunk，批量调用硅基流动 `BAAI/bge-m3` 生成 1024 维向量，再写入 Elasticsearch。
+- 管理员可以输入自然语言问题，使用同一 BGE-M3 模型生成查询向量，并通过 Elasticsearch kNN 查看 Top 3/5/10/20 chunk、来源文档和相关分。
 - MySQL 只记录文档级的 `indexed`、`chunk_count` 和 `indexed_at`，chunk 内容只保存在 Elasticsearch。
 - Token 只保存在当前标签页的 `sessionStorage`。
 
-文档文本解析、简单切分、BGE-M3 向量化和 ES 索引已经实现；kNN 检索接口和 RAG 问答尚未实现。
+文档文本解析、简单切分、BGE-M3 向量化、ES 索引和管理员 kNN 检索测试已经实现；面向患者的 RAG 引用回答尚未实现。本阶段不增加知识发布机制，测试检索范围为 ES 中所有已成功构建索引的 chunk。
 
 ## 当前 Docker 编排
 
@@ -35,7 +37,7 @@
 | `minio-init` | 幂等创建知识库 Bucket，执行成功后退出 | 无常驻端口 |
 | `kibana` | ES 调试界面，仅在 `tools` profile 中按需启动 | `http://127.0.0.1:5601` |
 
-Nacos、Sentinel、Gateway、Identity、MySQL 和 Redis 不在 Agent Compose 中。Agent 使用宿主机 MySQL 中独立的 `healthy_agent` 数据库；Redis 当前没有必要，因此不引入。
+Nacos、Sentinel、Gateway、Identity、MySQL 和 Redis 不在 Agent Compose 中。当前 Compose 强制关闭 Nacos 发现和配置，Agent 使用宿主机 MySQL 中独立的 `healthy_agent` 数据库；Redis 当前没有必要，因此不引入。
 
 ## Docker 启动
 
@@ -80,17 +82,29 @@ docker compose --profile tools up -d kibana
 
 不要随意执行 `docker compose down -v`，它会删除 ES 和 MinIO 数据卷。
 
-## 与医院系统联调
+## 本地认证与医院系统联调
 
-Agent Compose 不要求医院业务服务全部启动，但 Agent 后端需要宿主机 MySQL 可用。医院 Gateway、Identity 或 Nacos 未启动时，登录或经 Gateway 调用的接口不可用。
+当前 Compose 默认使用本地开发认证，不要求医院项目、Gateway、Identity 或 Nacos 启动，但 Agent 后端仍需要宿主机 MySQL 可用。
+
+- 管理员登录页点击“使用本地开发管理员登录”，患者登录页点击“使用本地开发患者登录”。
+- Agent 启动时为两个角色分别生成随机的内存 Token；Token 不写入仓库、数据库、日志或 Elasticsearch。
+- 前端把 Token 保存到当前标签页的 `sessionStorage`，Agent 重启后旧 Token 自动失效。
+- 本地模式仍执行 `PATIENT`/`STAFF` 路由授权，并不是给所有请求伪造管理员请求头。
+- `POST /api/agent/dev-auth/login` 只在 `AGENT_SECURITY_MODE=local-dev` 时签发开发 Token。
+
+恢复医院 Gateway 模式时修改 `.env`：
+
+```env
+AGENT_SECURITY_MODE=gateway
+AGENT_API_UPSTREAM=host.docker.internal:8080
+```
+
+然后执行 `docker compose up -d --build --force-recreate agent-backend agent-frontend`。`gateway` 是后端配置的默认值；该模式会关闭本地开发登录，浏览器请求重新经过 Gateway，并复用 Identity 登录。
 
 需要登录和权限联调时，在宿主机启动医院项目的 Gateway、Identity 及其必要依赖：
 
 - Nginx 将 `/api/**` 转发到 `host.docker.internal:8080`。
-- Agent 后端默认不连接 Nacos，避免医院系统关闭时持续重试。
-- 外部 Nacos 可用后，将 `.env` 中 `NACOS_DISCOVERY_ENABLED` 改为 `true`，再执行 `docker compose up -d --force-recreate agent-backend`。
-- `NACOS_SERVER_ADDR` 默认是 `host.docker.internal:8848`，不需要在 Agent Compose 中再建一个 Nacos。
-- Gateway 当前运行在 Windows 宿主机，因此 Agent 默认以 `127.0.0.1:8091` 注册到 Nacos；可通过 `AGENT_DISCOVERY_IP` 覆盖。
+- Agent Compose 当前强制关闭 Nacos，避免医院系统关闭时持续重试；后续真正接入微服务环境时再单独恢复注册配置。
 
 本地演示账号：
 
@@ -106,7 +120,7 @@ Agent Compose 不要求医院业务服务全部启动，但 Agent 后端需要�
 | `GET /api/agent/patient/auth/me` | `PATIENT` |
 | `GET /api/agent/admin/auth/me` | `STAFF` |
 
-浏览器只向 Gateway 发送 JWT。Agent 后端不解析 JWT，只信任 Gateway 在认证后注入的身份头；患者 Token 访问管理员接口、管理员 Token 访问患者接口均返回 HTTP 403。
+`gateway` 模式下，浏览器只向 Gateway 发送 JWT，Agent 后端不解析 JWT，只信任 Gateway 在认证后注入的身份头。`local-dev` 模式下，Agent 只接受自己启动时生成的随机开发 Token。两种模式都执行角色隔离：患者 Token 访问管理员接口、管理员 Token 访问患者接口均返回 HTTP 403。
 
 ## 文档管理与简单切块
 
@@ -131,8 +145,11 @@ Agent Compose 不要求医院业务服务全部启动，但 Agent 后端需要�
 | `POST /api/agent/admin/knowledge/documents/{documentId}/parse-preview` | 即时解析并返回受限长度的文本预览 | `STAFF` |
 | `POST /api/agent/admin/knowledge/documents/{documentId}/index` | 切分全文并构建 ES 索引；`force=true` 可强制重建 | `STAFF` |
 | `DELETE /api/agent/admin/knowledge/documents/{documentId}` | 删除 ES chunk、元数据和原文件 | `STAFF` |
+| `POST /api/agent/admin/knowledge/search` | 将问题向量化并执行 ES kNN 检索，`limit` 支持 1 至 20 | `STAFF` |
 
 MinIO 对象路径为 `documents/yyyy/MM/{documentId}/{fileName}`。MySQL 表只保存成功文档及其文档级索引结果，不保存 chunk；Elasticsearch 索引名为 `healthy-agent-knowledge-chunks-v1`，保存 chunk 文本、来源字段、`embeddingModel` 和 1024 维 `embedding`。接口返回的 `UPLOADED` 只表示原文件与元数据已经保存，是否完成切块以 `indexed` 和 `chunkCount` 为准。解析、向量化或 ES 写入任一步失败时，文档保持 `indexed=false`，可以直接重试。解析预览不会落库或写 ES；扫描版 PDF 暂不执行 OCR。
+
+管理员可访问 `http://127.0.0.1:8090/admin/knowledge/search` 测试向量召回。本仓库的 [`test-data/knowledge`](test-data/knowledge) 提供 TXT、Markdown、DOCX 和 PDF 四种虚构医院规则样本，以及推荐测试问题。先上传并为每份文档构建索引，再进入检索测试页观察召回结果。
 
 Elasticsearch 9 默认不在普通搜索响应的 `_source` 中返回 dense vector。在 Kibana Dev Tools 中检查原始向量时，需要显式加入：
 

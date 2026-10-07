@@ -65,14 +65,14 @@ async function logout() {
       <div class="admin-grid">
         <RouterLink class="admin-card active" to="/admin/knowledge">
           <span class="card-icon">文</span>
-          <div><b>文档与知识库</b><p>上传、解析、索引和发布医院知识文档</p></div>
+          <div><b>文档与知识库</b><p>上传、解析并索引医院知识文档</p></div>
           <em>进入 →</em>
         </RouterLink>
-        <article class="admin-card disabled">
+        <RouterLink class="admin-card active" to="/admin/knowledge/search">
           <span class="card-icon">检</span>
-          <div><b>检索测试</b><p>验证 ES 召回结果和答案引用</p></div>
-          <em>后续开放</em>
-        </article>
+          <div><b>向量检索测试</b><p>输入自然语言问题，验证 BGE-M3 与 ES 的 chunk 召回结果</p></div>
+          <em>进入 →</em>
+        </RouterLink>
         <article class="admin-card disabled">
           <span class="card-icon">任</span>
           <div><b>索引任务</b><p>查看文档处理进度与失败原因</p></div>
@@ -82,7 +82,7 @@ async function logout() {
 
       <div class="scope-note">
         <b>当前版本边界</b>
-        <p>已完成管理员登录、文档安全校验、MinIO 原始文件存储和 MySQL 元数据列表。文档解析、切分、ES 向量/全文索引以及发布流程将在后续 RAG 阶段接入。</p>
+        <p>已完成文档上传、解析、切分、BGE-M3 向量化、ES 索引和管理员检索测试。本阶段不增加知识发布机制，检索范围为所有已成功构建索引的文档。</p>
       </div>
     </section>
   </main>

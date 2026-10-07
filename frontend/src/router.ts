@@ -4,6 +4,7 @@ import LoginView from './views/LoginView.vue'
 import AdminHomeView from './views/AdminHomeView.vue'
 import AdminLoginView from './views/AdminLoginView.vue'
 import KnowledgeManagementView from './views/KnowledgeManagementView.vue'
+import KnowledgeSearchView from './views/KnowledgeSearchView.vue'
 import { session } from './stores/session'
 
 const router = createRouter({
@@ -14,6 +15,7 @@ const router = createRouter({
     { path: '/', component: HomeView, meta: { role: 'PATIENT' } },
     { path: '/admin', component: AdminHomeView, meta: { role: 'STAFF' } },
     { path: '/admin/knowledge', component: KnowledgeManagementView, meta: { role: 'STAFF' } },
+    { path: '/admin/knowledge/search', component: KnowledgeSearchView, meta: { role: 'STAFF' } },
     { path: '/:pathMatch(.*)*', redirect: '/' }
   ]
 })

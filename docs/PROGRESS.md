@@ -8,11 +8,12 @@
 | --- | --- | --- |
 | 1. 患者登录闭环 | 已完成 | 真实账号登录、Gateway 身份校验、退出和 Nginx 发布均已联调 |
 | 2. 管理员登录与权限骨架 | 已完成 | 复用 STAFF 账号，前后端双入口、路由隔离和知识库管理页面骨架已完成 |
+| 2.1 本地开发认证 | 已完成 | 医院项目关闭时使用 Agent 内存 Token，保留 PATIENT/STAFF 隔离，可配置切回 Gateway |
 | 3. 文档管理第一阶段 | 已完成 | 上传、列表、删除及 PDF/DOCX/TXT/Markdown 即时解析预览已实现 |
 | 4. 基础对话接口 | 未开始 | 普通响应与 SSE 流式响应 |
 | 5. 患者查询 Tools | 未开始 | 科室、医生、号源、我的预约与候补 |
 | 6. 写操作确认 | 未开始 | actionId、requestId、确认及幂等执行 |
-| 7. RAG 知识库 | 进行中 | 原始文件、解析、切块、BGE-M3 向量化和 ES 持久化已完成；kNN 检索与引用回答待实现 |
+| 7. RAG 知识库 | 进行中 | 原始文件、解析、切块、BGE-M3 向量化、ES 持久化和管理员 kNN 检索测试已完成；引用回答待实现 |
 | 8. Agent Docker 部署 | 已完成基础版 | 前后端、ES、MinIO 已独立编排；Kibana 按需启动 |
 
 ## 已完成：双角色登录
@@ -28,6 +29,17 @@
 - [x] 增加患者/管理员互相越权测试。
 - [x] 完成退出登录及本地状态清理。
 - [x] 前端在 Nginx Docker 镜像内完成生产构建并发布到 `8090`。
+
+## 已完成：无医院项目依赖的本地开发认证
+
+- [x] 增加 `gateway` 和 `local-dev` 两种明确的认证模式，后端脱离 Compose 时安全默认仍为 `gateway`。
+- [x] 当前 Agent Compose 默认使用 `local-dev`，医院项目、Gateway、Identity 和 Nacos 均可保持关闭。
+- [x] Agent 每次启动分别生成 PATIENT 与 STAFF 随机内存 Token，不保存到 MySQL、ES、MinIO 或日志。
+- [x] 管理员和患者登录页均增加本地开发登录按钮，不需要输入或保存测试密码。
+- [x] 本地 Token 仍经过统一身份拦截器和角色拦截器，患者不能调用管理员接口，管理员不能调用患者接口。
+- [x] Nginx 的 `/api/agent/**` 上游可配置；本地模式直连 Agent，切回 Gateway 模式时改为 `host.docker.internal:8080`。
+- [x] 当前 Compose 强制关闭 Nacos 配置与服务发现，避免医院组件关闭时产生连接重试。
+- [x] Agent 重启后旧开发 Token 自动失效，浏览器会回到登录页重新获取。
 
 ## 已完成：Agent 独立 Docker 编排
 
@@ -86,24 +98,27 @@
 - [x] 预置硅基流动 `BAAI/bge-m3` 的后端与 Compose 配置，API Key 仅从被 Git 忽略的 `.env` 注入。
 - [x] 实现批量 Embedding HTTP 客户端，校验响应数量、顺序、1024 维度以及 NaN/Infinity，并将 dense vector 写入 ES。
 - [x] Flyway V3 将旧文档重置为待索引，重新构建后同一 chunk 同时包含 content 和 embedding。
-- [ ] 实现查询文本向量化与 Elasticsearch kNN 检索接口。
+- [x] 实现查询文本向量化与 Elasticsearch kNN 检索接口。
+- [x] 增加管理员向量检索测试页，可选择 Top 3/5/10/20，展示来源文档、chunk 序号、文本和 ES 相关分。
+- [x] 查询使用与建库相同的 `BAAI/bge-m3` 和 1024 维向量，检索响应排除原始向量以减少传输体积。
+- [x] 查询文本限制为 1 至 1,000 字符，返回数量限制为 1 至 20；患者访问检索接口返回 HTTP 403。
+- [x] 增加 TXT、Markdown、DOCX 和 PDF 四种虚构医院规则测试资料及建议测试问题。
 
 ## 管理员端当前边界
 
-本版已经完成真实的文档上传、MinIO 保存、MySQL 文档元数据、列表、删除、文本预览、简单切块、BGE-M3 向量化和 ES 持久化。`knowledge_document` 只保存上传成功且尚未删除的文档以及文档级索引结果；chunk 文本和向量只保存在 Elasticsearch。接口中的 `UPLOADED` 只表示原文件和元数据已保存，是否完成索引以 `indexed` 为准。
+本版已经完成真实的文档上传、MinIO 保存、MySQL 文档元数据、列表、删除、文本预览、简单切块、BGE-M3 向量化、ES 持久化和管理员向量检索测试。`knowledge_document` 只保存上传成功且尚未删除的文档以及文档级索引结果；chunk 文本和向量只保存在 Elasticsearch。接口中的 `UPLOADED` 只表示原文件和元数据已保存，是否完成索引以 `indexed` 为准。管理员检索测试直接覆盖所有已成功写入 ES 的 chunk，本阶段不增加知识发布机制。
 
 后续 RAG 阶段计划接入：
 
-1. 将用户查询用同一 `BAAI/bge-m3` 模型向量化，并增加 Elasticsearch kNN 检索 API。
-2. 对比关键词检索和向量检索，再决定是否加入混合检索与 reranker。
-3. 增加知识发布控制，让患者 Agent 只检索已发布内容。
-4. 接入模型生成引用回答，并保留文档名和 chunk 来源。
-5. 文档量或处理时间明显增长后，再评估异步任务状态和消息队列；Redis 暂不引入。
+1. 使用测试文档对比关键词检索和向量检索，再决定是否加入混合检索与 reranker。
+2. 接入模型生成引用回答，并保留文档名和 chunk 来源。
+3. 患者 RAG 正式开放前，再评估是否需要知识发布控制；当前管理员测试不增加发布机制。
+4. 文档量或处理时间明显增长后，再评估异步任务状态和消息队列；Redis 暂不引入。
 
 ## 本次验证记录
 
-- 后端：`BUILD SUCCESS`，53 个测试，0 failures，0 errors；覆盖 PDF、DOCX、Markdown 解析、预览截断、简单切块、Embedding 客户端、索引服务、删除及权限。
-- 前端：TypeScript 检查和 Vite 生产构建成功，38 个模块完成转换。
+- 后端：`BUILD SUCCESS`，57 个测试，0 failures，0 errors；覆盖 PDF、DOCX、Markdown 解析、预览截断、简单切块、Embedding 客户端、索引服务、向量检索、本地开发认证与角色权限。
+- 前端：TypeScript 检查和 Vite 生产构建成功，40 个模块完成转换。
 - 患者登录：`patient_demo` 返回 `PATIENT`。
 - 管理员登录：`staff_demo` 返回 `STAFF`。
 - 患者会话接口：患者 Token 返回 HTTP 200，管理员 Token 返回 HTTP 403。
@@ -120,6 +135,10 @@
 - 已验证重复构建会跳过；删除测试文档后，Elasticsearch 中该 documentId 的 chunk 数量为 0。
 - 硅基流动 `BAAI/bge-m3` API 已完成真实连通测试：批量返回 2 个 1024 维归一化向量，数值均有效；API Key 已通过 `.env` 注入后端容器且未输出到日志。
 - 已完成真实的上传 → 切块 → BGE-M3 → ES 闭环：测试文档生成 5 个 chunk，每个 chunk 均可取回 1024 维有效向量，模型字段为 `BAAI/bge-m3`，测试数据已清理。
+- 已通过本地开发管理员 Token 完成 Nginx → Agent 身份校验，未启动医院 Gateway、Identity 或 Nacos。
+- 已上传 TXT、Markdown、DOCX、PDF 四份医院规则样本并完成索引，每份当前生成 1 个 chunk，测试数据保留给页面继续使用。
+- 已完成四组真实 BGE-M3 + ES kNN 检索：预约退费、住院探视、报告领取和夜间胸痛问题的 Top 1 均正确命中对应文档，相关分分别约为 0.8878、0.8760、0.8520 和 0.8514。
+- Kibana 已停止以节省内存；需要检查 ES 时可单独执行 `docker compose --profile tools up -d kibana`。
 - Flyway V1/V2 已在独立 `healthy_agent` 数据库创建元数据表并增加文档级索引字段。
 - 真实上传后，同一 documentId 已同时在 MinIO、MySQL 和列表 API 中验证。
 - 已验证单元级补偿路径：MinIO 失败不写 MySQL，MySQL 失败删除 MinIO 对象。

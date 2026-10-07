@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { getCurrentPatient } from '../api/agent'
-import { login as loginRequest, logout as logoutRequest } from '../api/auth'
+import { localDevLogin, login as loginRequest, logout as logoutRequest } from '../api/auth'
 import { ApiError } from '../api/http'
 import { signIn } from '../stores/session'
 
@@ -47,6 +47,25 @@ async function submit() {
     error.value = cause instanceof ApiError ? cause.message : '登录失败，请稍后重试'
   } finally {
     password.value = ''
+    loading.value = false
+  }
+}
+
+async function submitLocalDev() {
+  if (loading.value) return
+  loading.value = true
+  error.value = ''
+  try {
+    const result = await localDevLogin('PATIENT')
+    const verified = await getCurrentPatient(result.token)
+    if (!verified.authenticated || verified.role !== 'PATIENT' || verified.userId !== result.userId) {
+      throw new ApiError('本地患者身份校验失败')
+    }
+    signIn({ token: result.token, userId: result.userId, name: result.name, role: 'PATIENT' })
+    await router.replace('/')
+  } catch (cause) {
+    error.value = cause instanceof ApiError ? cause.message : '本地开发登录失败'
+  } finally {
     loading.value = false
   }
 }
@@ -129,13 +148,17 @@ async function submit() {
               <path d="m9 18 6-6-6-6" />
             </svg>
           </button>
+          <div class="login-divider"><span>医院 Gateway 未启动</span></div>
+          <button class="local-dev-button" type="button" :disabled="loading" @click="submitLocalDev">
+            {{ loading ? '正在登录…' : '使用本地开发患者登录' }}
+          </button>
         </form>
 
         <div class="security-note">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Zm-3-10 2 2 4-4" />
           </svg>
-          <span>账号密码仅发送至医院认证服务，不会进入 AI 对话。</span>
+          <span>医院服务关闭时可使用本地开发登录；该模式不发送账号密码，也不生成正式 JWT。</span>
         </div>
         <RouterLink class="role-switch" to="/admin/login">管理员登录入口 →</RouterLink>
       </div>

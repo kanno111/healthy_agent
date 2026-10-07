@@ -10,6 +10,10 @@ services:
     image: healthy-agent-frontend:local
     container_name: healthy-agent-frontend
     restart: unless-stopped
+    environment:
+      # Local development bypasses the hospital Gateway and talks to Agent directly.
+      # Set this to host.docker.internal:8080 when AGENT_SECURITY_MODE=gateway.
+      AGENT_API_UPSTREAM: ${AGENT_API_UPSTREAM:-agent-backend:8091}
     ports:
       - "127.0.0.1:${AGENT_WEB_PORT:-8090}:80"
     depends_on:
@@ -36,15 +40,16 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       JAVA_TOOL_OPTIONS: -Djava.net.preferIPv4Stack=true
       AGENT_PORT: 8091
+      AGENT_SECURITY_MODE: ${AGENT_SECURITY_MODE:-local-dev}
       NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:-host.docker.internal:8848}
       SPRING_CONFIG_IMPORT: optional:classpath:/nacos-disabled.yml
-      SPRING_CLOUD_NACOS_DISCOVERY_ENABLED: ${NACOS_DISCOVERY_ENABLED:-false}
+      SPRING_CLOUD_NACOS_DISCOVERY_ENABLED: "false"
       SPRING_CLOUD_NACOS_DISCOVERY_FAIL_FAST: "false"
       # Gateway runs on the Windows host, so advertise the published host port
       # instead of this container's private bridge address.
       SPRING_CLOUD_NACOS_DISCOVERY_IP: ${AGENT_DISCOVERY_IP:-127.0.0.1}
       SPRING_CLOUD_NACOS_DISCOVERY_PORT: 8091
-      SPRING_CLOUD_NACOS_CONFIG_ENABLED: ${NACOS_CONFIG_ENABLED:-false}
+      SPRING_CLOUD_NACOS_CONFIG_ENABLED: "false"
       AGENT_ELASTICSEARCH_URIS: http://elasticsearch:9200
       AGENT_EMBEDDING_BASE_URL: ${AGENT_EMBEDDING_BASE_URL:-https://api.siliconflow.cn/v1}
       AGENT_EMBEDDING_API_KEY: ${AGENT_EMBEDDING_API_KEY:-}

@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { getCurrentAdmin } from '../api/agent'
-import { login as loginRequest, logout as logoutRequest } from '../api/auth'
+import { localDevLogin, login as loginRequest, logout as logoutRequest } from '../api/auth'
 import { ApiError } from '../api/http'
 import { signIn } from '../stores/session'
 
@@ -46,6 +46,25 @@ async function submit() {
     loading.value = false
   }
 }
+
+async function submitLocalDev() {
+  if (loading.value) return
+  loading.value = true
+  error.value = ''
+  try {
+    const result = await localDevLogin('STAFF')
+    const verified = await getCurrentAdmin(result.token)
+    if (!verified.authenticated || verified.role !== 'STAFF' || verified.userId !== result.userId) {
+      throw new ApiError('本地管理员身份校验失败')
+    }
+    signIn({ token: result.token, userId: result.userId, name: result.name, role: 'STAFF' })
+    await router.replace('/admin')
+  } catch (cause) {
+    error.value = cause instanceof ApiError ? cause.message : '本地开发登录失败'
+  } finally {
+    loading.value = false
+  }
+}
 </script>
 
 <template>
@@ -63,7 +82,7 @@ async function submit() {
       <div class="feature-list" aria-label="管理能力">
         <span><b>01</b> 管理员身份独立隔离</span>
         <span><b>02</b> 文档与索引可追踪</span>
-        <span><b>03</b> 患者端仅消费已发布知识</span>
+        <span><b>03</b> 向量召回结果可直接验证</span>
       </div>
     </section>
 
@@ -72,7 +91,7 @@ async function submit() {
         <div class="mobile-brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i></span>Healthy Agent Console</div>
         <p class="eyebrow mint">ADMIN CONSOLE</p>
         <h2>管理员登录</h2>
-        <p class="form-intro">复用医院预约系统的管理员账号</p>
+        <p class="form-intro">可复用医院管理员账号，或在医院项目关闭时使用本地开发模式</p>
 
         <form @submit.prevent="submit" novalidate>
           <label for="admin-username">管理员账号</label>
@@ -90,11 +109,15 @@ async function submit() {
             <span>{{ loading ? '正在验证管理员身份…' : '进入管理控制台' }}</span>
             <svg v-if="!loading" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
           </button>
+          <div class="login-divider"><span>医院 Gateway 未启动</span></div>
+          <button class="local-dev-button" type="button" :disabled="loading" @click="submitLocalDev">
+            {{ loading ? '正在登录…' : '使用本地开发管理员登录' }}
+          </button>
         </form>
 
         <div class="security-note">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Zm-3-10 2 2 4-4" /></svg>
-          <span>管理接口只接受 Gateway 验证后的 STAFF 身份。</span>
+          <span>本地开发模式不使用 JWT，仅在 Agent Docker 的显式开关开启时可用；生产环境仍使用 Gateway 的 STAFF 身份。</span>
         </div>
         <RouterLink class="role-switch" to="/login">← 返回患者登录</RouterLink>
       </div>

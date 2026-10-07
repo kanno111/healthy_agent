@@ -6,15 +6,19 @@ import co.elastic.clients.elasticsearch._types.Refresh;
 import co.elastic.clients.elasticsearch._types.mapping.DenseVectorSimilarity;
 import co.elastic.clients.elasticsearch.core.BulkRequest;
 import co.elastic.clients.elasticsearch.core.BulkResponse;
+import co.elastic.clients.json.JsonData;
 import com.healthy.agent.common.AgentErrorCode;
 import com.healthy.agent.common.AgentException;
 import com.healthy.agent.config.ElasticsearchProperties;
 import com.healthy.agent.config.EmbeddingProperties;
+import com.healthy.agent.knowledge.search.KnowledgeSearchHit;
+import jakarta.json.JsonObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.ArrayList;
 
 @Repository
 public class KnowledgeChunkRepository {
@@ -72,6 +76,45 @@ public class KnowledgeChunkRepository {
         } catch (Exception exception) {
             log.warn("Failed to delete Elasticsearch chunks for document {}: {}",
                     documentId, exception.getClass().getSimpleName());
+            throw new AgentException(AgentErrorCode.INDEX_UNAVAILABLE);
+        }
+    }
+
+    public List<KnowledgeSearchHit> search(List<Float> queryVector, int limit) {
+        try {
+            ensureIndex();
+            int candidates = Math.max(50, limit * 10);
+            var response = client.search(request -> request
+                            .index(indexName)
+                            .size(limit)
+                            .source(source -> source.filter(filter -> filter
+                                    .excludes("embedding", "documentSha256", "embeddingModel", "indexedAt")))
+                            .knn(knn -> knn
+                                    .field("embedding")
+                                    .queryVector(queryVector)
+                                    .k(limit)
+                                    .numCandidates(candidates)),
+                    JsonData.class);
+
+            List<KnowledgeSearchHit> results = new ArrayList<>();
+            int rank = 1;
+            for (var hit : response.hits().hits()) {
+                JsonData sourceData = hit.source();
+                if (sourceData == null) {
+                    continue;
+                }
+                JsonObject source = sourceData.toJson().asJsonObject();
+                results.add(new KnowledgeSearchHit(
+                        rank++, source.getString("chunkId"), source.getString("documentId"),
+                        source.getString("fileName"), source.getString("contentType"),
+                        source.getInt("chunkIndex"), source.getString("content"),
+                        hit.score() == null ? 0.0d : hit.score()
+                ));
+            }
+            return List.copyOf(results);
+        } catch (Exception exception) {
+            log.warn("Failed to search Elasticsearch knowledge chunks: {}: {}",
+                    exception.getClass().getSimpleName(), exception.getMessage());
             throw new AgentException(AgentErrorCode.INDEX_UNAVAILABLE);
         }
     }

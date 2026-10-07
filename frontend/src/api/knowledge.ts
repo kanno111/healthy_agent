@@ -30,6 +30,24 @@ export type KnowledgeIndexResult = {
   skipped: boolean
 }
 
+export type KnowledgeSearchHit = {
+  rank: number
+  chunkId: string
+  documentId: string
+  fileName: string
+  contentType: string
+  chunkIndex: number
+  content: string
+  score: number
+}
+
+export type KnowledgeSearchResponse = {
+  query: string
+  embeddingModel: string
+  limit: number
+  results: KnowledgeSearchHit[]
+}
+
 const DOCUMENT_ENDPOINT = '/api/agent/admin/knowledge/documents'
 
 export async function listKnowledgeDocuments(token: string): Promise<KnowledgeDocument[]> {
@@ -109,4 +127,25 @@ export async function buildKnowledgeDocumentIndex(
     throw new ApiError('无法连接到索引服务，请稍后重试')
   }
   return readApiResponse(response, '文档索引构建失败')
+}
+
+export async function searchKnowledge(
+  token: string,
+  query: string,
+  limit: number
+): Promise<KnowledgeSearchResponse> {
+  let response: Response
+  try {
+    response = await fetch('/api/agent/admin/knowledge/search', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ query, limit })
+    })
+  } catch {
+    throw new ApiError('无法连接到向量检索服务，请稍后重试')
+  }
+  return readApiResponse(response, '向量检索失败')
 }

@@ -31,6 +31,12 @@ spring:
         group: ${NACOS_DISCOVERY_GROUP:DEFAULT_GROUP}
 
 agent:
+  security:
+    mode: ${AGENT_SECURITY_MODE:gateway}
+    local-patient-id: ${AGENT_LOCAL_PATIENT_ID:900001}
+    local-patient-name: ${AGENT_LOCAL_PATIENT_NAME:本地测试患者}
+    local-admin-id: ${AGENT_LOCAL_ADMIN_ID:900002}
+    local-admin-name: ${AGENT_LOCAL_ADMIN_NAME:本地测试管理员}
   minio:
     endpoint: ${AGENT_MINIO_ENDPOINT:http://127.0.0.1:9000}
     access-key: ${AGENT_MINIO_ACCESS_KEY:}
