@@ -9,6 +9,8 @@ public enum AgentErrorCode {
     INVALID_SEARCH_QUERY(40013, "请输入 1 至 1000 个字符的检索问题", HttpStatus.BAD_REQUEST),
     INVALID_SEARCH_LIMIT(40014, "检索结果数量必须在 1 至 20 之间", HttpStatus.BAD_REQUEST),
     INVALID_LOCAL_DEV_ROLE(40015, "本地开发登录角色无效", HttpStatus.BAD_REQUEST),
+    INVALID_RAG_QUESTION(40016, "请输入 1 至 1000 个字符的知识库问题", HttpStatus.BAD_REQUEST),
+    INVALID_RAG_LIMIT(40017, "RAG 召回数量超出允许范围", HttpStatus.BAD_REQUEST),
     UNAUTHORIZED(40100, "未登录或登录已失效", HttpStatus.UNAUTHORIZED),
     FORBIDDEN(40300, "无权访问当前资源", HttpStatus.FORBIDDEN),
     LOCAL_DEV_AUTH_DISABLED(40301, "本地开发登录未启用", HttpStatus.FORBIDDEN),
@@ -21,6 +23,7 @@ public enum AgentErrorCode {
     METADATA_UNAVAILABLE(50311, "文档元数据服务暂时不可用", HttpStatus.SERVICE_UNAVAILABLE),
     INDEX_UNAVAILABLE(50312, "文档索引服务暂时不可用", HttpStatus.SERVICE_UNAVAILABLE),
     EMBEDDING_UNAVAILABLE(50313, "文档向量化服务暂时不可用", HttpStatus.SERVICE_UNAVAILABLE),
+    LLM_UNAVAILABLE(50314, "大模型问答服务暂时不可用", HttpStatus.SERVICE_UNAVAILABLE),
     INTERNAL_ERROR(50000, "服务暂时不可用", HttpStatus.INTERNAL_SERVER_ERROR);
 
     private final int code;

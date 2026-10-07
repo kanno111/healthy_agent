@@ -48,6 +48,31 @@ export type KnowledgeSearchResponse = {
   results: KnowledgeSearchHit[]
 }
 
+export type KnowledgeRagCitation = {
+  reference: number
+  chunkId: string
+  documentId: string
+  fileName: string
+  chunkIndex: number
+  content: string
+  score: number
+}
+
+export type TokenUsage = {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+}
+
+export type KnowledgeRagResponse = {
+  question: string
+  answer: string
+  model: string
+  embeddingModel: string
+  citations: KnowledgeRagCitation[]
+  usage: TokenUsage
+}
+
 const DOCUMENT_ENDPOINT = '/api/agent/admin/knowledge/documents'
 
 export async function listKnowledgeDocuments(token: string): Promise<KnowledgeDocument[]> {
@@ -148,4 +173,25 @@ export async function searchKnowledge(
     throw new ApiError('无法连接到向量检索服务，请稍后重试')
   }
   return readApiResponse(response, '向量检索失败')
+}
+
+export async function askKnowledge(
+  token: string,
+  question: string,
+  limit: number
+): Promise<KnowledgeRagResponse> {
+  let response: Response
+  try {
+    response = await fetch('/api/agent/admin/knowledge/rag/ask', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ question, limit })
+    })
+  } catch {
+    throw new ApiError('无法连接到 RAG 问答服务，请稍后重试')
+  }
+  return readApiResponse(response, '知识库问答失败')
 }

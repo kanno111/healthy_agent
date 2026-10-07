@@ -73,16 +73,16 @@ async function logout() {
           <div><b>向量检索测试</b><p>输入自然语言问题，验证 BGE-M3 与 ES 的 chunk 召回结果</p></div>
           <em>进入 →</em>
         </RouterLink>
-        <article class="admin-card disabled">
-          <span class="card-icon">任</span>
-          <div><b>索引任务</b><p>查看文档处理进度与失败原因</p></div>
-          <em>后续开放</em>
-        </article>
+        <RouterLink class="admin-card active" to="/admin/knowledge/rag">
+          <span class="card-icon">答</span>
+          <div><b>RAG 问答测试</b><p>使用 DeepSeek 生成带知识来源的医院制度回答</p></div>
+          <em>进入 →</em>
+        </RouterLink>
       </div>
 
       <div class="scope-note">
         <b>当前版本边界</b>
-        <p>已完成文档上传、解析、切分、BGE-M3 向量化、ES 索引和管理员检索测试。本阶段不增加知识发布机制，检索范围为所有已成功构建索引的文档。</p>
+        <p>已完成文档上传、解析、切分、BGE-M3 向量化、ES 索引、向量检索和 DeepSeek 引用问答。本阶段不增加知识发布机制，检索范围为所有已成功构建索引的文档。</p>
       </div>
     </section>
   </main>

@@ -13,7 +13,7 @@
 | 4. 基础对话接口 | 未开始 | 普通响应与 SSE 流式响应 |
 | 5. 患者查询 Tools | 未开始 | 科室、医生、号源、我的预约与候补 |
 | 6. 写操作确认 | 未开始 | actionId、requestId、确认及幂等执行 |
-| 7. RAG 知识库 | 进行中 | 原始文件、解析、切块、BGE-M3 向量化、ES 持久化和管理员 kNN 检索测试已完成；引用回答待实现 |
+| 7. RAG 知识库 | 进行中 | 管理员检索与 DeepSeek 引用问答前后端已完成；患者问答页面与正式开放策略待实现 |
 | 8. Agent Docker 部署 | 已完成基础版 | 前后端、ES、MinIO 已独立编排；Kibana 按需启动 |
 
 ## 已完成：双角色登录
@@ -103,27 +103,40 @@
 - [x] 查询使用与建库相同的 `BAAI/bge-m3` 和 1024 维向量，检索响应排除原始向量以减少传输体积。
 - [x] 查询文本限制为 1 至 1,000 字符，返回数量限制为 1 至 20；患者访问检索接口返回 HTTP 403。
 - [x] 增加 TXT、Markdown、DOCX 和 PDF 四种虚构医院规则测试资料及建议测试问题。
+- [x] 增加通用 `ChatModelClient` 和 DeepSeek HTTP 实现，Embedding 与生成模型的 Key、地址和模型配置完全分离。
+- [x] 增加管理员 `POST /api/agent/admin/knowledge/rag/ask` 接口，复用现有 BGE-M3 + ES 向量检索。
+- [x] RAG 回答返回来源文档、chunk、相关分和实际送入模型的引用文本。
+- [x] 返回 DeepSeek 的输入、输出与合计 Token 用量，便于观察成本。
+- [x] 默认使用低成本 `deepseek-flash`，关闭思考模式，输出上限为 600 Token。
+- [x] 增加最低相关分和 6,000 字符上下文上限；无可靠资料时不调用模型。
+- [x] 系统提示要求只依据资料回答、标注引用，并将文档内容视为不可信数据以降低提示词注入风险。
+- [x] DeepSeek Key 只从后端环境变量注入，不进入浏览器、日志、数据库、ES 或模型上下文。
+- [x] 增加管理员 RAG 测试页面和管理首页入口，支持示例问题、Top K 选择、加载态及错误提示。
+- [x] 页面展示回答、引用文档、实际上下文 chunk、相关分、模型名称、Token 用量和请求耗时。
+- [x] RAG 页面默认使用真实联调效果更稳的 Top 3，同时保留 Top 1/5/8 供管理员比较召回质量。
+- [x] 前端只以纯文本展示模型回答和引用内容，不直接渲染模型返回的 HTML。
 
 ## 管理员端当前边界
 
-本版已经完成真实的文档上传、MinIO 保存、MySQL 文档元数据、列表、删除、文本预览、简单切块、BGE-M3 向量化、ES 持久化和管理员向量检索测试。`knowledge_document` 只保存上传成功且尚未删除的文档以及文档级索引结果；chunk 文本和向量只保存在 Elasticsearch。接口中的 `UPLOADED` 只表示原文件和元数据已保存，是否完成索引以 `indexed` 为准。管理员检索测试直接覆盖所有已成功写入 ES 的 chunk，本阶段不增加知识发布机制。
+本版已经完成真实的文档上传、MinIO 保存、MySQL 文档元数据、列表、删除、文本预览、简单切块、BGE-M3 向量化、ES 持久化、管理员向量检索和管理员 RAG 前后端入口。`knowledge_document` 只保存上传成功且尚未删除的文档以及文档级索引结果；chunk 文本和向量只保存在 Elasticsearch。接口中的 `UPLOADED` 只表示原文件和元数据已保存，是否完成索引以 `indexed` 为准。管理员检索与 RAG 直接覆盖所有已成功写入 ES 的 chunk，本阶段不增加知识发布机制。
 
 后续 RAG 阶段计划接入：
 
 1. 使用测试文档对比关键词检索和向量检索，再决定是否加入混合检索与 reranker。
-2. 接入模型生成引用回答，并保留文档名和 chunk 来源。
+2. 把同一 `KnowledgeRagService` 接入患者问答入口，并设计患者侧更简洁的会话界面。
 3. 患者 RAG 正式开放前，再评估是否需要知识发布控制；当前管理员测试不增加发布机制。
-4. 文档量或处理时间明显增长后，再评估异步任务状态和消息队列；Redis 暂不引入。
+4. 结合真实问题调整最低相关分、Top K、切块策略，并评估混合检索与 reranker。
+5. 文档量或处理时间明显增长后，再评估异步任务状态和消息队列；Redis 暂不引入。
 
 ## 本次验证记录
 
-- 后端：`BUILD SUCCESS`，57 个测试，0 failures，0 errors；覆盖 PDF、DOCX、Markdown 解析、预览截断、简单切块、Embedding 客户端、索引服务、向量检索、本地开发认证与角色权限。
-- 前端：TypeScript 检查和 Vite 生产构建成功，40 个模块完成转换。
+- 后端：`BUILD SUCCESS`，65 个测试，0 failures，0 errors；覆盖 PDF、DOCX、Markdown 解析、预览截断、简单切块、Embedding 客户端、索引服务、向量检索、DeepSeek 客户端、RAG 编排、本地开发认证与角色权限。
+- 前端：TypeScript 检查和 Vite 生产构建成功，42 个模块完成转换。
 - 患者登录：`patient_demo` 返回 `PATIENT`。
 - 管理员登录：`staff_demo` 返回 `STAFF`。
 - 患者会话接口：患者 Token 返回 HTTP 200，管理员 Token 返回 HTTP 403。
 - 管理员会话接口：管理员 Token 返回 HTTP 200，患者 Token 返回 HTTP 403。
-- 前端：患者页、管理员登录页、管理首页均返回 HTTP 200。
+- 前端：患者页、管理员登录页、管理首页、向量检索页和 RAG 问答页均返回 HTTP 200。
 - Docker Compose：前端、后端、Elasticsearch、MinIO 均为 `healthy`。
 - Agent 后端：`GET /actuator/health` 返回 HTTP 200。
 - Elasticsearch：`GET /_cluster/health` 返回 HTTP 200。
@@ -138,6 +151,8 @@
 - 已通过本地开发管理员 Token 完成 Nginx → Agent 身份校验，未启动医院 Gateway、Identity 或 Nacos。
 - 已上传 TXT、Markdown、DOCX、PDF 四份医院规则样本并完成索引，每份当前生成 1 个 chunk，测试数据保留给页面继续使用。
 - 已完成四组真实 BGE-M3 + ES kNN 检索：预约退费、住院探视、报告领取和夜间胸痛问题的 Top 1 均正确命中对应文档，相关分分别约为 0.8878、0.8760、0.8520 和 0.8514。
+- 新版后端镜像已构建并启动为 healthy；管理员 RAG 请求已完成 Nginx → 权限校验 → BGE-M3 → ES → DeepSeek 真实闭环。预约退费问题返回 HTTP 200、耗时约 2.2 秒、使用 1,873 Token；住院探视问题返回 HTTP 200、耗时约 1.5 秒、使用 1,239 Token，两次回答均正确引用 Top 1 文档。
+- 真实联调发现 Top 5 在最低相关分 `0.65` 时可能纳入无关资料（例如 Redis 测试文档得分约 `0.6567`）；当前答案未引用该资料，后续建议将管理员 RAG 默认 Top K 调为 3 或把最低相关分提高到约 `0.75`，再结合更多问题校准。
 - Kibana 已停止以节省内存；需要检查 ES 时可单独执行 `docker compose --profile tools up -d kibana`。
 - Flyway V1/V2 已在独立 `healthy_agent` 数据库创建元数据表并增加文档级索引字段。
 - 真实上传后，同一 documentId 已同时在 MinIO、MySQL 和列表 API 中验证。

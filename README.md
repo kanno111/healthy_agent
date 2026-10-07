@@ -19,10 +19,11 @@
 - Apache Tika 从 MinIO 提取文档文本，预览最多返回 12,000 个字符且不执行 OCR。
 - Agent 后端负责把全文切成最多 1,000 字符、相邻重叠 100 字符的 chunk，批量调用硅基流动 `BAAI/bge-m3` 生成 1024 维向量，再写入 Elasticsearch。
 - 管理员可以输入自然语言问题，使用同一 BGE-M3 模型生成查询向量，并通过 Elasticsearch kNN 查看 Top 3/5/10/20 chunk、来源文档和相关分。
+- 管理员可以在 RAG 测试页面提问：先使用 BGE-M3 + ES 召回资料，再由 DeepSeek 根据有限上下文生成带引用的回答，同时展示本次实际 Token 用量和耗时。
 - MySQL 只记录文档级的 `indexed`、`chunk_count` 和 `indexed_at`，chunk 内容只保存在 Elasticsearch。
 - Token 只保存在当前标签页的 `sessionStorage`。
 
-文档文本解析、简单切分、BGE-M3 向量化、ES 索引和管理员 kNN 检索测试已经实现；面向患者的 RAG 引用回答尚未实现。本阶段不增加知识发布机制，测试检索范围为 ES 中所有已成功构建索引的 chunk。
+文档文本解析、简单切分、BGE-M3 向量化、ES 索引、管理员 kNN 检索和管理员 RAG 前后端测试入口已经实现；面向患者的 RAG 对话页面尚未实现。本阶段不增加知识发布机制，测试范围为 ES 中所有已成功构建索引的 chunk。
 
 ## 当前 Docker 编排
 
@@ -67,6 +68,17 @@ AGENT_EMBEDDING_DIMENSIONS=1024
 ```
 
 `.env` 已被 Git 忽略；不要把 Key 写入 `.env.example`、前端代码、MySQL、Elasticsearch 或日志。后端按最多 16 个 chunk 一批调用该接口，并校验向量数量、维度和数值有效性。
+
+RAG 生成使用 DeepSeek。真实 Key 同样只填写到本地 `.env`：
+
+```env
+AGENT_LLM_BASE_URL=https://api.deepseek.com
+AGENT_LLM_API_KEY=在这里填写自己的Key
+AGENT_LLM_MODEL=deepseek-flash
+AGENT_LLM_MAX_OUTPUT_TOKENS=600
+```
+
+第一版显式关闭模型思考模式，默认最多召回 5 个 chunk、只采用相关分不低于 `0.65` 的结果、上下文最多 6,000 字符、回答最多 600 Token。Embedding Key 与 DeepSeek Key 分开配置，二者不能放入前端。
 
 停止服务但保留 ES、MinIO 数据：
 
@@ -146,10 +158,25 @@ AGENT_API_UPSTREAM=host.docker.internal:8080
 | `POST /api/agent/admin/knowledge/documents/{documentId}/index` | 切分全文并构建 ES 索引；`force=true` 可强制重建 | `STAFF` |
 | `DELETE /api/agent/admin/knowledge/documents/{documentId}` | 删除 ES chunk、元数据和原文件 | `STAFF` |
 | `POST /api/agent/admin/knowledge/search` | 将问题向量化并执行 ES kNN 检索，`limit` 支持 1 至 20 | `STAFF` |
+| `POST /api/agent/admin/knowledge/rag/ask` | 检索知识库并由 DeepSeek 生成带引用回答，`limit` 支持 1 至 8 | `STAFF` |
 
 MinIO 对象路径为 `documents/yyyy/MM/{documentId}/{fileName}`。MySQL 表只保存成功文档及其文档级索引结果，不保存 chunk；Elasticsearch 索引名为 `healthy-agent-knowledge-chunks-v1`，保存 chunk 文本、来源字段、`embeddingModel` 和 1024 维 `embedding`。接口返回的 `UPLOADED` 只表示原文件与元数据已经保存，是否完成切块以 `indexed` 和 `chunkCount` 为准。解析、向量化或 ES 写入任一步失败时，文档保持 `indexed=false`，可以直接重试。解析预览不会落库或写 ES；扫描版 PDF 暂不执行 OCR。
 
 管理员可访问 `http://127.0.0.1:8090/admin/knowledge/search` 测试向量召回。本仓库的 [`test-data/knowledge`](test-data/knowledge) 提供 TXT、Markdown、DOCX 和 PDF 四种虚构医院规则样本，以及推荐测试问题。先上传并为每份文档构建索引，再进入检索测试页观察召回结果。
+
+管理员可访问 `http://127.0.0.1:8090/admin/knowledge/rag` 测试完整 RAG 回答。页面默认使用 Top 3，可切换 Top 1/3/5/8，并展示回答、引用 chunk、相关分、生成模型、Embedding 模型、Token 用量和浏览器侧请求耗时。
+
+管理员 RAG 请求示例：
+
+```json
+POST /api/agent/admin/knowledge/rag/ask
+{
+  "question": "门诊预约取消后如何退费？",
+  "limit": 5
+}
+```
+
+响应包含 `answer`、`citations`、生成模型、Embedding 模型，以及 `usage.promptTokens`、`usage.completionTokens` 和 `usage.totalTokens`。低于最低相关分或没有召回结果时不会请求 DeepSeek，而是直接返回知识库信息不足；引用内容来自真正送入模型的 chunk。当前只开放管理员接口，底层 `KnowledgeRagService` 不绑定角色，后续患者端可以复用同一套检索与生成逻辑，再由独立的患者 Controller 执行权限和展示策略。
 
 Elasticsearch 9 默认不在普通搜索响应的 `_source` 中返回 dense vector。在 Kibana Dev Tools 中检查原始向量时，需要显式加入：
 

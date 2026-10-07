@@ -62,6 +62,19 @@ agent:
     batch-size: ${AGENT_EMBEDDING_BATCH_SIZE:16}
     connect-timeout: ${AGENT_EMBEDDING_CONNECT_TIMEOUT:5s}
     read-timeout: ${AGENT_EMBEDDING_READ_TIMEOUT:60s}
+  llm:
+    base-url: ${AGENT_LLM_BASE_URL:https://api.deepseek.com}
+    api-key: ${AGENT_LLM_API_KEY:}
+    model: ${AGENT_LLM_MODEL:deepseek-flash}
+    max-output-tokens: ${AGENT_LLM_MAX_OUTPUT_TOKENS:600}
+    temperature: ${AGENT_LLM_TEMPERATURE:0.2}
+    connect-timeout: ${AGENT_LLM_CONNECT_TIMEOUT:5s}
+    read-timeout: ${AGENT_LLM_READ_TIMEOUT:90s}
+  rag:
+    default-top-k: ${AGENT_RAG_DEFAULT_TOP_K:5}
+    max-top-k: ${AGENT_RAG_MAX_TOP_K:8}
+    min-score: ${AGENT_RAG_MIN_SCORE:0.65}
+    max-context-characters: ${AGENT_RAG_MAX_CONTEXT_CHARACTERS:6000}
 
 management:
   endpoints:
