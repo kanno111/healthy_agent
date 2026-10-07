@@ -1,7 +1,9 @@
 name: healthy-agent
 
+# Only the Agent project and its own infrastructure are containerized here.
+# The existing hospital Gateway/Identity services keep running on the host.
 services:
-  frontend:
+  agent-frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -9,13 +11,148 @@ services:
     container_name: healthy-agent-frontend
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${AGENT_WEB_PORT:-8089}:80"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "127.0.0.1:${AGENT_WEB_PORT:-8090}:80"
+    depends_on:
+      agent-backend:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 6
-      start_period: 5s
+      retries: 10
+      start_period: 10s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [agent-network]
 
+  agent-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: healthy-agent-backend:local
+    container_name: healthy-agent-backend
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      JAVA_TOOL_OPTIONS: -Djava.net.preferIPv4Stack=true
+      AGENT_PORT: 8091
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:-host.docker.internal:8848}
+      SPRING_CONFIG_IMPORT: optional:classpath:/nacos-disabled.yml
+      SPRING_CLOUD_NACOS_DISCOVERY_ENABLED: ${NACOS_DISCOVERY_ENABLED:-false}
+      SPRING_CLOUD_NACOS_DISCOVERY_FAIL_FAST: "false"
+      # Gateway runs on the Windows host, so advertise the published host port
+      # instead of this container's private bridge address.
+      SPRING_CLOUD_NACOS_DISCOVERY_IP: ${AGENT_DISCOVERY_IP:-127.0.0.1}
+      SPRING_CLOUD_NACOS_DISCOVERY_PORT: 8091
+      SPRING_CLOUD_NACOS_CONFIG_ENABLED: ${NACOS_CONFIG_ENABLED:-false}
+      AGENT_ELASTICSEARCH_URIS: http://elasticsearch:9200
+      AGENT_EMBEDDING_BASE_URL: ${AGENT_EMBEDDING_BASE_URL:-https://api.siliconflow.cn/v1}
+      AGENT_EMBEDDING_API_KEY: ${AGENT_EMBEDDING_API_KEY:-}
+      AGENT_EMBEDDING_MODEL: ${AGENT_EMBEDDING_MODEL:-BAAI/bge-m3}
+      AGENT_EMBEDDING_DIMENSIONS: ${AGENT_EMBEDDING_DIMENSIONS:-1024}
+      AGENT_EMBEDDING_BATCH_SIZE: ${AGENT_EMBEDDING_BATCH_SIZE:-16}
+      AGENT_EMBEDDING_CONNECT_TIMEOUT: ${AGENT_EMBEDDING_CONNECT_TIMEOUT:-5s}
+      AGENT_EMBEDDING_READ_TIMEOUT: ${AGENT_EMBEDDING_READ_TIMEOUT:-60s}
+      AGENT_MINIO_ENDPOINT: http://minio:9000
+      AGENT_MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      AGENT_MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      AGENT_MINIO_BUCKET: ${MINIO_BUCKET:-healthy-agent-knowledge}
+      AGENT_DB_HOST: host.docker.internal
+      AGENT_DB_PORT: ${AGENT_DB_PORT:-3306}
+      AGENT_DB_NAME: ${AGENT_DB_NAME:-healthy_agent}
+      AGENT_DB_USERNAME: ${AGENT_DB_USERNAME}
+      AGENT_DB_PASSWORD: ${AGENT_DB_PASSWORD}
+    ports:
+      - "127.0.0.1:8091:8091"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8091'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [agent-network]
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.4
+    container_name: healthy-agent-elasticsearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      xpack.security.enrollment.enabled: "false"
+      ES_JAVA_OPTS: ${ES_JAVA_OPTS:--Xms512m -Xmx512m}
+    ports:
+      - "127.0.0.1:${ELASTICSEARCH_PORT:-9200}:9200"
+    volumes:
+      - agent_elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9200/_cluster/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 40s
+    networks: [agent-network]
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.5.4
+    container_name: healthy-agent-kibana
+    restart: unless-stopped
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      TELEMETRY_ENABLED: "false"
+    ports:
+      - "127.0.0.1:${KIBANA_PORT:-5601}:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    profiles: [tools]
+    networks: [agent-network]
+
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    container_name: healthy-agent-minio
+    restart: unless-stopped
+    user: "0:0"
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "/usr/bin/minio", "--version"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    networks: [agent-network]
+
+  minio-init:
+    image: cgr.dev/chainguard/minio-client:latest
+    restart: "no"
+    environment:
+      MC_HOST_local: http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000
+    command: ["mb", "--ignore-existing", "local/${MINIO_BUCKET:-healthy-agent-knowledge}"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks: [agent-network]
+
+networks:
+  agent-network:
+    name: healthy-agent-network
+    driver: bridge
+
+volumes:
+  agent_elasticsearch_data:
+  minio_data:

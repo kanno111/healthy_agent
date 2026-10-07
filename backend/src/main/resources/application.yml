@@ -4,6 +4,21 @@ server:
 spring:
   application:
     name: healthy-agent
+  datasource:
+    url: jdbc:mysql://${AGENT_DB_HOST:127.0.0.1}:${AGENT_DB_PORT:3306}/${AGENT_DB_NAME:healthy_agent}?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true
+    username: ${AGENT_DB_USERNAME:healthy_agent}
+    password: ${AGENT_DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: ${AGENT_DB_MAX_POOL_SIZE:5}
+      minimum-idle: ${AGENT_DB_MIN_IDLE:1}
+      connection-timeout: 5000
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  servlet:
+    multipart:
+      max-file-size: ${AGENT_UPLOAD_MAX_FILE_SIZE:20MB}
+      max-request-size: ${AGENT_UPLOAD_MAX_REQUEST_SIZE:21MB}
   config:
     import:
       - optional:nacos:${spring.application.name}.yaml?group=${NACOS_CONFIG_GROUP:DEFAULT_GROUP}&refreshEnabled=true
@@ -14,6 +29,33 @@ spring:
       password: ${NACOS_PASSWORD:}
       discovery:
         group: ${NACOS_DISCOVERY_GROUP:DEFAULT_GROUP}
+
+agent:
+  minio:
+    endpoint: ${AGENT_MINIO_ENDPOINT:http://127.0.0.1:9000}
+    access-key: ${AGENT_MINIO_ACCESS_KEY:}
+    secret-key: ${AGENT_MINIO_SECRET_KEY:}
+    bucket: ${AGENT_MINIO_BUCKET:healthy-agent-knowledge}
+  knowledge:
+    upload:
+      max-file-size-bytes: ${AGENT_UPLOAD_MAX_FILE_SIZE_BYTES:20971520}
+    preview:
+      max-characters: ${AGENT_PREVIEW_MAX_CHARACTERS:12000}
+    indexing:
+      max-extracted-characters: ${AGENT_INDEX_MAX_EXTRACTED_CHARACTERS:2000000}
+      chunk-max-characters: ${AGENT_INDEX_CHUNK_MAX_CHARACTERS:1000}
+      chunk-overlap-characters: ${AGENT_INDEX_CHUNK_OVERLAP_CHARACTERS:100}
+  elasticsearch:
+    uri: ${AGENT_ELASTICSEARCH_URIS:http://127.0.0.1:9200}
+    index-name: ${AGENT_ELASTICSEARCH_INDEX:healthy-agent-knowledge-chunks-v1}
+  embedding:
+    base-url: ${AGENT_EMBEDDING_BASE_URL:https://api.siliconflow.cn/v1}
+    api-key: ${AGENT_EMBEDDING_API_KEY:}
+    model: ${AGENT_EMBEDDING_MODEL:BAAI/bge-m3}
+    dimensions: ${AGENT_EMBEDDING_DIMENSIONS:1024}
+    batch-size: ${AGENT_EMBEDDING_BATCH_SIZE:16}
+    connect-timeout: ${AGENT_EMBEDDING_CONNECT_TIMEOUT:5s}
+    read-timeout: ${AGENT_EMBEDDING_READ_TIMEOUT:60s}
 
 management:
   endpoints:
@@ -28,4 +70,3 @@ logging:
   level:
     root: info
     com.healthy.agent: info
-

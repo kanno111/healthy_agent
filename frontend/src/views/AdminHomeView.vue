@@ -82,7 +82,7 @@ async function logout() {
 
       <div class="scope-note">
         <b>当前版本边界</b>
-        <p>已完成管理员登录、前后端路由隔离和管理入口。真实文档上传、MySQL 元数据、ES 向量/全文索引及 Redis 任务状态将在 RAG 阶段接入。</p>
+        <p>已完成管理员登录、文档安全校验、MinIO 原始文件存储和 MySQL 元数据列表。文档解析、切分、ES 向量/全文索引以及发布流程将在后续 RAG 阶段接入。</p>
       </div>
     </section>
   </main>

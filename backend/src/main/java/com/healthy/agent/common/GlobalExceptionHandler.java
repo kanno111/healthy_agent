@@ -3,6 +3,7 @@ package com.healthy.agent.common;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -16,6 +17,12 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(errorCode.httpStatus()).body(ApiResponse.failure(errorCode));
     }
 
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMaxUploadSize(MaxUploadSizeExceededException exception) {
+        AgentErrorCode errorCode = AgentErrorCode.FILE_TOO_LARGE;
+        return ResponseEntity.status(errorCode.httpStatus()).body(ApiResponse.failure(errorCode));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleUnexpectedException(Exception exception) {
         log.error("Unhandled agent request failure", exception);
@@ -23,4 +30,3 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(errorCode.httpStatus()).body(ApiResponse.failure(errorCode));
     }
 }
-
