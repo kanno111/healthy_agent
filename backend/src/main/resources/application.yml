@@ -4,6 +4,22 @@ server:
 spring:
   application:
     name: healthy-agent
+  ai:
+    model:
+      chat: openai
+    openai:
+      base-url: ${AGENT_LLM_BASE_URL:https://api.deepseek.com}
+      api-key: ${AGENT_LLM_API_KEY:not-configured}
+      timeout: ${AGENT_LLM_READ_TIMEOUT:90s}
+      max-retries: 1
+      chat:
+        model: ${AGENT_LLM_MODEL:deepseek-flash}
+    tools:
+      throw-exception-on-error: false
+      limits:
+        max-calls-per-tool-default: ${AGENT_TOOL_MAX_CALLS_PER_TOOL:30}
+        max-total-tool-calls: ${AGENT_TOOL_MAX_TOTAL_CALLS:60}
+        on-limit-exceeded: THROW
   datasource:
     url: jdbc:mysql://${AGENT_DB_HOST:127.0.0.1}:${AGENT_DB_PORT:3306}/${AGENT_DB_NAME:healthy_agent}?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true
     username: ${AGENT_DB_USERNAME:healthy_agent}
@@ -31,6 +47,10 @@ spring:
         group: ${NACOS_DISCOVERY_GROUP:DEFAULT_GROUP}
 
 agent:
+  healthy-api:
+    base-url: ${AGENT_HEALTHY_API_BASE_URL:http://8.137.98.235}
+    connect-timeout: ${AGENT_HEALTHY_API_CONNECT_TIMEOUT:2s}
+    read-timeout: ${AGENT_HEALTHY_API_READ_TIMEOUT:5s}
   security:
     mode: ${AGENT_SECURITY_MODE:gateway}
     local-patient-id: ${AGENT_LOCAL_PATIENT_ID:900001}

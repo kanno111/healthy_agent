@@ -1,4 +1,5 @@
 import { ApiError, readApiResponse } from './http'
+import { agentRequestHeaders } from './agentHeaders'
 
 export type KnowledgeDocument = {
   id: string
@@ -79,7 +80,7 @@ export async function listKnowledgeDocuments(token: string): Promise<KnowledgeDo
   let response: Response
   try {
     response = await fetch(DOCUMENT_ENDPOINT, {
-      headers: { Authorization: `Bearer ${token}` }
+      headers: agentRequestHeaders(token)
     })
   } catch {
     throw new ApiError('无法连接到文档服务，请确认 Gateway 和 Agent 已启动')
@@ -98,7 +99,7 @@ export async function uploadKnowledgeDocument(
   try {
     response = await fetch(DOCUMENT_ENDPOINT, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
+      headers: agentRequestHeaders(token),
       body: form
     })
   } catch {
@@ -115,7 +116,7 @@ export async function previewKnowledgeDocument(
   try {
     response = await fetch(`${DOCUMENT_ENDPOINT}/${encodeURIComponent(documentId)}/parse-preview`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}` }
+      headers: agentRequestHeaders(token)
     })
   } catch {
     throw new ApiError('无法连接到文档解析服务，请稍后重试')
@@ -128,7 +129,7 @@ export async function deleteKnowledgeDocument(token: string, documentId: string)
   try {
     response = await fetch(`${DOCUMENT_ENDPOINT}/${encodeURIComponent(documentId)}`, {
       method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` }
+      headers: agentRequestHeaders(token)
     })
   } catch {
     throw new ApiError('无法连接到文档服务，请稍后重试')
@@ -146,7 +147,7 @@ export async function buildKnowledgeDocumentIndex(
     const query = force ? '?force=true' : ''
     response = await fetch(`${DOCUMENT_ENDPOINT}/${encodeURIComponent(documentId)}/index${query}`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}` }
+      headers: agentRequestHeaders(token)
     })
   } catch {
     throw new ApiError('无法连接到索引服务，请稍后重试')
@@ -164,7 +165,7 @@ export async function searchKnowledge(
     response = await fetch('/api/agent/admin/knowledge/search', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`,
+        ...agentRequestHeaders(token),
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({ query, limit })
@@ -185,7 +186,7 @@ export async function askKnowledge(
     response = await fetch('/api/agent/admin/knowledge/rag/ask', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`,
+        ...agentRequestHeaders(token),
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({ question, limit })

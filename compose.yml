@@ -1,7 +1,7 @@
 name: healthy-agent
 
 # Only the Agent project and its own infrastructure are containerized here.
-# The existing hospital Gateway/Identity services keep running on the host.
+# The hospital monolith is deployed separately and reached through HTTP.
 services:
   agent-frontend:
     build:
@@ -11,9 +11,11 @@ services:
     container_name: healthy-agent-frontend
     restart: unless-stopped
     environment:
-      # Local development bypasses the hospital Gateway and talks to Agent directly.
-      # Set this to host.docker.internal:8080 when AGENT_SECURITY_MODE=gateway.
+      # Agent requests stay local; login and future business APIs use the cloud
+      # Healthy upstream configured below.
       AGENT_API_UPSTREAM: ${AGENT_API_UPSTREAM:-agent-backend:8091}
+      # Local demo only: Healthy monolith currently exposes plain HTTP.
+      HEALTHY_API_UPSTREAM: ${HEALTHY_API_UPSTREAM:-8.137.98.235:80}
     ports:
       - "127.0.0.1:${AGENT_WEB_PORT:-8090}:80"
     depends_on:
@@ -41,6 +43,9 @@ services:
       JAVA_TOOL_OPTIONS: -Djava.net.preferIPv4Stack=true
       AGENT_PORT: 8091
       AGENT_SECURITY_MODE: ${AGENT_SECURITY_MODE:-local-dev}
+      AGENT_HEALTHY_API_BASE_URL: ${AGENT_HEALTHY_API_BASE_URL:-http://8.137.98.235}
+      AGENT_HEALTHY_API_CONNECT_TIMEOUT: ${AGENT_HEALTHY_API_CONNECT_TIMEOUT:-2s}
+      AGENT_HEALTHY_API_READ_TIMEOUT: ${AGENT_HEALTHY_API_READ_TIMEOUT:-5s}
       NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:-host.docker.internal:8848}
       SPRING_CONFIG_IMPORT: optional:classpath:/nacos-disabled.yml
       SPRING_CLOUD_NACOS_DISCOVERY_ENABLED: "false"
@@ -65,6 +70,8 @@ services:
       AGENT_LLM_TEMPERATURE: ${AGENT_LLM_TEMPERATURE:-0.2}
       AGENT_LLM_CONNECT_TIMEOUT: ${AGENT_LLM_CONNECT_TIMEOUT:-5s}
       AGENT_LLM_READ_TIMEOUT: ${AGENT_LLM_READ_TIMEOUT:-90s}
+      AGENT_TOOL_MAX_CALLS_PER_TOOL: ${AGENT_TOOL_MAX_CALLS_PER_TOOL:-30}
+      AGENT_TOOL_MAX_TOTAL_CALLS: ${AGENT_TOOL_MAX_TOTAL_CALLS:-60}
       AGENT_RAG_DEFAULT_TOP_K: ${AGENT_RAG_DEFAULT_TOP_K:-5}
       AGENT_RAG_MAX_TOP_K: ${AGENT_RAG_MAX_TOP_K:-8}
       AGENT_RAG_MIN_SCORE: ${AGENT_RAG_MIN_SCORE:-0.65}

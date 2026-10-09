@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { getCurrentPatient } from '../api/agent'
 import { localDevLogin, login as loginRequest, logout as logoutRequest } from '../api/auth'
 import { ApiError } from '../api/http'
 import { signIn } from '../stores/session'
@@ -33,11 +32,6 @@ async function submit() {
       throw new ApiError('当前 Agent 仅支持患者账号登录')
     }
 
-    const verified = await getCurrentPatient(result.token)
-    if (!verified.authenticated || verified.role !== 'PATIENT' || verified.userId !== result.userId) {
-      throw new ApiError('患者身份校验失败，请重新登录')
-    }
-
     signIn({ token: result.token, userId: result.userId, name: result.name, role: 'PATIENT' })
     await router.replace('/')
   } catch (cause) {
@@ -57,8 +51,7 @@ async function submitLocalDev() {
   error.value = ''
   try {
     const result = await localDevLogin('PATIENT')
-    const verified = await getCurrentPatient(result.token)
-    if (!verified.authenticated || verified.role !== 'PATIENT' || verified.userId !== result.userId) {
+    if (result.role !== 'PATIENT') {
       throw new ApiError('本地患者身份校验失败')
     }
     signIn({ token: result.token, userId: result.userId, name: result.name, role: 'PATIENT' })
@@ -105,7 +98,7 @@ async function submitLocalDev() {
 
         <p class="eyebrow mint">WELCOME BACK</p>
         <h2>患者登录</h2>
-        <p class="form-intro">使用医院预约系统的患者账号继续</p>
+        <p class="form-intro">使用云端医院预约系统的患者账号继续</p>
 
         <form @submit.prevent="submit" novalidate>
           <label for="username">患者账号</label>
@@ -148,7 +141,7 @@ async function submitLocalDev() {
               <path d="m9 18 6-6-6-6" />
             </svg>
           </button>
-          <div class="login-divider"><span>医院 Gateway 未启动</span></div>
+          <div class="login-divider"><span>或仅测试 Agent 页面</span></div>
           <button class="local-dev-button" type="button" :disabled="loading" @click="submitLocalDev">
             {{ loading ? '正在登录…' : '使用本地开发患者登录' }}
           </button>
@@ -158,7 +151,7 @@ async function submitLocalDev() {
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Zm-3-10 2 2 4-4" />
           </svg>
-          <span>医院服务关闭时可使用本地开发登录；该模式不发送账号密码，也不生成正式 JWT。</span>
+          <span>当前仅限本机开发：正式登录由云端 Healthy 签发 JWT，Agent 暂时信任登录返回的身份信息，尚未自行验签。</span>
         </div>
         <RouterLink class="role-switch" to="/admin/login">管理员登录入口 →</RouterLink>
       </div>

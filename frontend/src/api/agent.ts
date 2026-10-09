@@ -1,4 +1,5 @@
 import { ApiError, readApiResponse } from './http'
+import { agentRequestHeaders } from './agentHeaders'
 
 export type AgentRole = 'PATIENT' | 'STAFF'
 
@@ -12,7 +13,7 @@ async function getCurrentSession(token: string, endpoint: string): Promise<Agent
   let response: Response
   try {
     response = await fetch(endpoint, {
-      headers: { Authorization: `Bearer ${token}` }
+      headers: agentRequestHeaders(token)
     })
   } catch {
     throw new ApiError('无法连接到 Agent 服务，请确认服务和 Gateway 路由已启动')

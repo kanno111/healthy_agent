@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { getCurrentAdmin } from '../api/agent'
 import { localDevLogin, login as loginRequest, logout as logoutRequest } from '../api/auth'
 import { ApiError } from '../api/http'
 import { signIn } from '../stores/session'
@@ -31,11 +30,6 @@ async function submit() {
       throw new ApiError('该入口仅允许管理员账号登录')
     }
 
-    const verified = await getCurrentAdmin(result.token)
-    if (!verified.authenticated || verified.role !== 'STAFF' || verified.userId !== result.userId) {
-      throw new ApiError('管理员身份校验失败，请重新登录')
-    }
-
     signIn({ token: result.token, userId: result.userId, name: result.name, role: 'STAFF' })
     await router.replace('/admin')
   } catch (cause) {
@@ -53,8 +47,7 @@ async function submitLocalDev() {
   error.value = ''
   try {
     const result = await localDevLogin('STAFF')
-    const verified = await getCurrentAdmin(result.token)
-    if (!verified.authenticated || verified.role !== 'STAFF' || verified.userId !== result.userId) {
+    if (result.role !== 'STAFF') {
       throw new ApiError('本地管理员身份校验失败')
     }
     signIn({ token: result.token, userId: result.userId, name: result.name, role: 'STAFF' })
@@ -91,7 +84,7 @@ async function submitLocalDev() {
         <div class="mobile-brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i></span>Healthy Agent Console</div>
         <p class="eyebrow mint">ADMIN CONSOLE</p>
         <h2>管理员登录</h2>
-        <p class="form-intro">可复用医院管理员账号，或在医院项目关闭时使用本地开发模式</p>
+        <p class="form-intro">可复用云端医院管理员账号，或仅测试 Agent 管理页面</p>
 
         <form @submit.prevent="submit" novalidate>
           <label for="admin-username">管理员账号</label>
@@ -109,7 +102,7 @@ async function submitLocalDev() {
             <span>{{ loading ? '正在验证管理员身份…' : '进入管理控制台' }}</span>
             <svg v-if="!loading" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
           </button>
-          <div class="login-divider"><span>医院 Gateway 未启动</span></div>
+          <div class="login-divider"><span>或仅测试 Agent 页面</span></div>
           <button class="local-dev-button" type="button" :disabled="loading" @click="submitLocalDev">
             {{ loading ? '正在登录…' : '使用本地开发管理员登录' }}
           </button>
@@ -117,7 +110,7 @@ async function submitLocalDev() {
 
         <div class="security-note">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Zm-3-10 2 2 4-4" /></svg>
-          <span>本地开发模式不使用 JWT，仅在 Agent Docker 的显式开关开启时可用；生产环境仍使用 Gateway 的 STAFF 身份。</span>
+          <span>当前仅限本机开发：正式登录由云端 Healthy 签发 JWT，Agent 暂时信任登录返回的身份信息，尚未自行验签。</span>
         </div>
         <RouterLink class="role-switch" to="/login">← 返回患者登录</RouterLink>
       </div>
