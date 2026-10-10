@@ -3,7 +3,6 @@ package com.healthy.agent.action;
 import com.healthy.agent.common.AgentErrorCode;
 import com.healthy.agent.common.AgentException;
 import com.healthy.agent.state.AgentStateService;
-import com.healthy.agent.state.AgentTaskType;
 import com.healthy.agent.state.Candidate;
 import com.healthy.agent.state.CandidateType;
 import com.healthy.agent.tool.ToolError;
@@ -72,7 +71,6 @@ public class PatientActionService {
         }
         return prepare(
                 conversationId,
-                AgentTaskType.CANCEL_APPOINTMENT,
                 PatientActionType.CANCEL_APPOINTMENT,
                 new CancelAppointmentPayload(candidate.businessId()),
                 authorization,
@@ -99,7 +97,6 @@ public class PatientActionService {
         }
         return prepare(
                 conversationId,
-                AgentTaskType.CREATE_APPOINTMENT,
                 PatientActionType.CREATE_APPOINTMENT,
                 new CreateAppointmentPayload(
                         candidate.businessId(), candidate.doctorId(), parsedDate,
@@ -129,7 +126,6 @@ public class PatientActionService {
         }
         return prepare(
                 conversationId,
-                AgentTaskType.JOIN_WAITLIST,
                 PatientActionType.JOIN_WAITLIST,
                 new JoinWaitlistPayload(
                         candidate.businessId(), candidate.doctorId(), parsedDate),
@@ -150,7 +146,6 @@ public class PatientActionService {
         }
         return prepare(
                 conversationId,
-                AgentTaskType.CANCEL_WAITLIST,
                 PatientActionType.CANCEL_WAITLIST,
                 new CancelWaitlistPayload(candidate.businessId()),
                 authorization,
@@ -170,7 +165,6 @@ public class PatientActionService {
         }
         return prepare(
                 conversationId,
-                AgentTaskType.CONFIRM_WAITLIST,
                 PatientActionType.CONFIRM_WAITLIST,
                 new ConfirmWaitlistPayload(candidate.businessId()),
                 authorization,
@@ -248,7 +242,6 @@ public class PatientActionService {
 
     private ActionPreparationResult prepare(
             String conversationId,
-            AgentTaskType task,
             PatientActionType type,
             PatientActionPayload payload,
             String authorization,
@@ -279,7 +272,7 @@ public class PatientActionService {
                     prepared.preview(),
                     "等待患者确认");
             PendingActionView view = store.save(action).toView();
-            stateService.prepareAction(conversationId, task, view);
+            stateService.prepareAction(conversationId, view);
             return ActionPreparationResult.ready(view);
         }
     }

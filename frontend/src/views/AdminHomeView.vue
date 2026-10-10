@@ -70,7 +70,7 @@ async function logout() {
         </RouterLink>
         <RouterLink class="admin-card active" to="/admin/knowledge/search">
           <span class="card-icon">检</span>
-          <div><b>向量检索测试</b><p>输入自然语言问题，验证 BGE-M3 与 ES 的 chunk 召回结果</p></div>
+          <div><b>检索策略与评测</b><p>对比 Vector、BM25、RRF，并运行固定检索评测集</p></div>
           <em>进入 →</em>
         </RouterLink>
         <RouterLink class="admin-card active" to="/admin/knowledge/rag">
@@ -82,7 +82,7 @@ async function logout() {
 
       <div class="scope-note">
         <b>当前版本边界</b>
-        <p>已完成文档上传、解析、切分、BGE-M3 向量化、ES 索引、向量检索和 DeepSeek 引用问答。本阶段不增加知识发布机制，检索范围为所有已成功构建索引的文档。</p>
+        <p>已完成文档上传、解析、切分、BGE-M3 向量化、ES 索引、Vector/BM25/RRF 检索和 DeepSeek 引用问答。本阶段不增加知识发布机制，检索范围为所有已成功构建索引的文档。</p>
       </div>
     </section>
   </main>

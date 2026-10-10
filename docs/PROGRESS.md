@@ -1,6 +1,6 @@
 # Healthy Agent 开发进度
 
-最后更新：2026-10-08
+最后更新：2026-10-09
 
 ## 总览
 
@@ -13,7 +13,7 @@
 | 4. 基础对话接口 | 进行中 | 患者 RAG/Tool 统一响应、聊天页面和 20 轮窗口记忆已完成；SSE 待实现 |
 | 5. 患者查询 Tools | 已完成基础版 | 科室、医生、单人/批量号源、我的预约与候补共 7 个只读 Tool 已联调 |
 | 6. 写操作确认 | 已完成基础版 | 创建/取消预约及加入/取消/确认候补统一支持 actionId、确认/拒绝按钮、执行前复查和重复执行防护 |
-| 7. RAG 知识库 | 进行中 | 管理员测试、患者 RAG 及其与业务 Tool 的模型路由已完成；正式知识开放策略待实现 |
+| 7. RAG 知识库 | 进行中 | Vector/BM25 基线、最小 RRF、104 条含多正例的评测集、管理员测试、患者 RAG 及业务 Tool 路由已完成；阈值优化和正式知识开放策略待实现 |
 | 8. Agent Docker 部署 | 已完成基础版 | 前后端、ES、MinIO 已独立编排；Kibana 按需启动 |
 
 ## 已完成：双角色登录
@@ -112,7 +112,7 @@
 - [x] 增加管理员向量检索测试页，可选择 Top 3/5/10/20，展示来源文档、chunk 序号、文本和 ES 相关分。
 - [x] 查询使用与建库相同的 `BAAI/bge-m3` 和 1024 维向量，检索响应排除原始向量以减少传输体积。
 - [x] 查询文本限制为 1 至 1,000 字符，返回数量限制为 1 至 20；患者访问检索接口返回 HTTP 403。
-- [x] 增加 TXT、Markdown、DOCX 和 PDF 四种虚构医院规则测试资料及建议测试问题。
+- [x] 增加 TXT、Markdown、DOCX 和 PDF 共十二份虚构医院规则测试资料及建议测试问题，覆盖预约退费、探视陪护、报告领取、急诊分诊、签到过号、医保票据、检查改期、病历复印、儿童门诊、药房、体检和互联网复诊。
 - [x] 增加通用 `ChatModelClient`，底层由 Spring AI 2.0.1 的 OpenAI 兼容客户端连接 DeepSeek；Embedding 与生成模型的 Key、地址和模型配置完全分离。
 - [x] 增加管理员 `POST /api/agent/admin/knowledge/rag/ask` 接口，复用现有 BGE-M3 + ES 向量检索。
 - [x] RAG 回答返回来源文档、chunk、相关分和实际送入模型的引用文本。
@@ -125,6 +125,57 @@
 - [x] 页面展示回答、引用文档、实际上下文 chunk、相关分、模型名称、Token 用量和请求耗时。
 - [x] RAG 页面默认使用真实联调效果更稳的 Top 3，同时保留 Top 1/5/8 供管理员比较召回质量。
 - [x] 前端只以纯文本展示模型回答和引用内容，不直接渲染模型返回的 HTML。
+
+## 已完成：RAG 阶段 1/2——标注评测集与 BM25 基线
+
+- [x] 参考 [Elasticsearch Hybrid Search](https://www.elastic.co/docs/solutions/search/hybrid-search)、[RRF](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/reciprocal-rank-fusion) 和 [Ranking](https://www.elastic.co/docs/solutions/search/ranking) 官方实现；本阶段只借鉴“先分别建立 lexical/vector 基线，再进入融合”的模式，没有提前实现 RRF、Reranker，也没有增加 ChromaDB、LangGraph 或其他依赖。
+- [x] 新增 `v1-2026-10-09` 固定检索评测集，共 40 条脱敏问题：36 条正例和 4 条无答案、隐私、提示注入及虚构事实负例。
+- [x] 评测标注使用稳定文件名而不是运行时 UUID `documentId`，支持同一批文档重复上传到不同环境后继续评测。
+- [x] 新增管理员 `POST /api/agent/admin/knowledge/evaluations/retrieval`，可对 `VECTOR` 或 `BM25` 计算文档级 Recall@K、Precision@K、MRR、nDCG@K、负例空召回率和逐问题结果；患者访问返回 HTTP 403。
+- [x] 在现有 Elasticsearch `content` 字段实现独立 BM25 检索；BM25 不调用 Embedding API，Vector 继续使用 BGE-M3，两套原始分数不混用。
+- [x] 管理员检索页面可选择 BGE-M3 Vector 或 Elasticsearch BM25，并能直接运行 40 条固定评测；患者 RAG 默认策略保持 Vector，本阶段不改变线上问答路径。
+- [x] 新增 8 份虚构 Markdown 制度，将仓库测试资料由 4 份扩充到 12 份；已通过本地管理员接口上传并索引，本地知识库现有 13 份文档且全部已索引。
+- [x] 真实 Top 5 基线：BM25 Recall `1.0000`、MRR `0.9583`、nDCG `0.9692`；Vector Recall `1.0000`、MRR `0.9861`、nDCG `0.9897`。两种策略 Precision 均为 `0.2000`，因为每题只标注 1 个正确文档且统一取 Top 5。
+- [x] 4 条负例在两种策略下均有返回结果，负例空召回率均为 `0.0000`；已明确记录“检索有结果不代表有可靠答案”，本阶段未用少量负例硬编码关键词或全局阈值。
+- [x] 基线环境、指标解释、限制和下一步决策记录在 `docs/RAG_RETRIEVAL_BASELINE_2026-10-09.md`。
+
+## 已完成：RAG 阶段 3 最小 RRF
+
+- [x] 延续 Elasticsearch 官方 RRF 的按排名融合模式，不直接相加 BM25 `_score` 与 Vector 相似度；没有增加第三方向量库、Reranker 或状态机依赖。
+- [x] 新增 `HYBRID` 策略：BM25 与 BGE-M3 kNN 各取 50 个候选，以 `chunkId` 为融合单位，使用无权重 `1 / (60 + rank)` 累加分数，再返回请求的 Top K。
+- [x] 同一 chunk 在单个分支重复出现时只计分一次；最终结果按 RRF 分数、最佳分支排名和 `chunkId` 确定性排序，并重新生成连续排名。
+- [x] 管理员检索和固定评测页面支持 Vector、BM25、RRF 三种策略；Hybrid 分数明确显示为 RRF 分，避免误解为向量相似度。
+- [x] 初始 13 文档、40 题、Top 5 结果：RRF Recall `1.0000`、Precision `0.2000`、MRR `0.9861`、nDCG `0.9897`、负例空召回率 `0.0000`。
+- [x] 在初始 13 文档语料上，RRF 与 Vector 指标相同；该历史结论已由下方扩充语料后的复测结果补充，患者 RAG 仍暂时默认 Vector。
+
+## 已完成：RAG 语料数量与复杂度扩充
+
+- [x] 保持原有 40 条评测问题、Top 5 口径和 Vector/BM25/RRF 参数不变，没有增加 Top1/Top3 指标，确保本轮差异只来自语料变化。
+- [x] 新增编号 13～24 共 12 份虚构 Markdown 制度资料，仓库测试资料由 12 份扩充为 24 份；本地知识库连同此前开发测试文档共有 25 份。
+- [x] 新增资料覆盖住院结算、日间手术、标本补采、镇静检查、证明盖章、随访转诊、无障碍服务、长处方、冷链药品、特殊病区探视、专家停诊和病案寄递。
+- [x] 新文档刻意包含与原语料相邻但不等价的业务术语、例外状态和处理边界，并移除“建议测试问题”，避免把评测问法直接写进检索语料。
+- [x] 12 份资料已通过 Nginx → Agent → MinIO → Tika → BGE-M3 → Elasticsearch 真实闭环上传和索引，每份实际切分为 2 个 chunk；当前 25 份文档全部已索引，共 37 个 chunk。
+- [x] 扩充后继续使用同一 40 题 Top 5 评测：BM25 MRR `0.9074`、nDCG `0.9312`；Vector MRR `0.9583`、nDCG `0.9692`；RRF MRR `0.9722`、nDCG `0.9795`。三者 Recall 和 Precision 仍为 `1.0000`、`0.2000`。
+- [x] v1 阶段只把新增文档作为干扰项时，RRF 曾表现出排序收益；该历史结论已经由下方包含新增文档正例的 v2 结果取代。
+
+## 已完成：RAG 评测集 v2 与 HitRate 指标
+
+- [x] 参考 [Elasticsearch Ranking Evaluation](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/search-rank-eval) 的标准 Precision/Recall/MRR/DCG 定义，以及 [BEIR Metrics](https://github.com/beir-cellar/beir/wiki/Metrics-available) 的 Top-K Accuracy；没有引入第三方评测依赖。
+- [x] 固定数据集升级为 `v2-2026-10-09`，从 40 条扩充到 80 条：72 条正例、8 条无答案或安全负例。
+- [x] 为编号 13～24 的 12 份新增文档各补充 3 条正例，共 36 条；评测问题只存在独立 JSON 中，没有写回文档正文造成查询泄漏。
+- [x] 保留标准 `Precision@K = Top K 中标注相关结果数 / K`，同时新增 `HitRate@K`，表示至少命中一个标注相关文档的正例问题占比；管理页面用 HitRate 替换 Precision 主卡，但 API 继续返回 Precision 供诊断和兼容。
+- [x] 真实 80 题 Top 5：BM25 HitRate `1.0000`、MRR `0.9056`、nDCG `0.9296`；Vector 与 RRF HitRate `0.9861`、MRR `0.9514`、nDCG `0.9605`；三者负例空召回率均为 `0.0000`。
+- [x] Vector 与 RRF 共同漏掉 `rag-057`。BM25 对目标 chunk 排第 1，Vector 对同一文档另一 chunk 排第 10，当前以 `chunkId` 融合的 RRF 将目标排第 6；这成为后续评估文档级聚合或单文档 chunk 限制的固定回归样本。
+
+## 已完成：RAG 评测集 v3 多正例标注
+
+- [x] 延续 Elasticsearch Rank Evaluation/BEIR 的 qrels 集合思路，没有为了多正例引入评测框架或新依赖；窄问题保留单一权威文档，只有确实需要联合多份制度的问题才标注多个相关文档。
+- [x] 固定数据集升级为 `v3-2026-10-09`，共 104 条：72 条单文档问题、24 条跨制度多文档问题和 8 条无答案或安全负例。
+- [x] 24 条跨制度问题分别标注 2～3 个相关文件，覆盖停诊退费、特殊病区探视、资料授权、儿童急诊、复诊检查、出院病历、镇静改期、手术退费、冷链配送、病案寄递等组合场景。
+- [x] 数据集加载器允许多个相关文件，同时拒绝空文件名和重复文件名；自动化测试不再假设每个正例必须恰好对应一个文件。
+- [x] 真实 104 题 Top 5：BM25 HitRate/Recall/Precision 为 `1.0000/0.9965/0.2542`，Vector 为 `0.9896/0.9792/0.2500`，RRF 为 `0.9896/0.9809/0.2500`。
+- [x] 多正例使 HitRate 与 Recall 真正分离：三种策略都至少部分命中全部 24 条跨制度问题；BM25 完整召回 23/24，Vector 和 RRF 各完整召回 22/24。Precision 不再被单正例固定在约 `0.20`，但仍受候选人工判断池不完整影响。
+- [x] 当前仍保持患者 RAG 默认 Vector；Hybrid 排序指标虽略高于 Vector，但多正例完整召回没有提高，尚不足以切换默认路径。
 
 ## 已完成：患者基础聊天页面
 
@@ -203,22 +254,54 @@
 ## 已完成：患者会话级 AgentState 统一重构
 
 - [x] 新增 `AgentStateService`，以服务端作用域键 `patient:{userId}:{conversationId}` 管理普通 Java `AgentState`；第一版继续使用 `ConcurrentHashMap`、30 分钟惰性 TTL 和最多 8 个最近 ResultSet，没有引入 Redis、数据库 Checkpoint、LangGraph 或状态机框架。
-- [x] `AgentState` 统一保存 `phase`、`activeTask`、`currentResultSetId`、`recentResultSets`、`selectedCandidate`、当前 `pendingAction` 和 `expiresAt`。所有 Map 访问集中在 Service，Controller、ChatService 和 Tool 不直接持有状态 Map。
+- [x] `AgentState` 只保存后续轮次仍可能引用的业务数据：`currentResultSetId`、`recentResultSets`、`selectedCandidate`、当前 `pendingAction`、`lastActionResult` 和 `expiresAt`。所有 Map 访问集中在 Service，Controller、ChatService 和 Tool 不直接持有状态 Map。
 - [x] 七个患者业务只读 Tool 均已扫描并接入统一结果转换：科室、医生、医生详情、单医生号源、批量医生号源、我的预约、我的候补分别生成 `DEPARTMENT`、`DOCTOR`、`SCHEDULE_SLOT`、`APPOINTMENT` 或 `WAITLIST` ResultSet。
 - [x] `search_hospital_policy` 属于制度/科普 RAG，不产生可供后续业务写操作选择的真实对象，因此不写 AgentState；ChatMemory 仍只负责最近约 20 轮自然语言上下文。
 - [x] 每次业务查询追加新 ResultSet 并更新 `currentResultSetId`，不覆盖最近历史；ResultSet 描述同时包含日期范围和本轮用户查询摘要，使模型能把“刚才这周”解析为旧 ResultSet ID，而 Java 再从该 ResultSet 确定真实业务 ID。
-- [x] 新增统一 `select_patient_candidate`：模型只表达 ResultSet、序号、类型、医生、科室、日期、时段和状态；Java 负责零条、唯一、多条三态匹配。多条匹配会生成新的缩小 ResultSet 并进入 `WAITING_SELECTION`，模型不得自行任选。
+- [x] 新增统一 `select_patient_candidate`：模型只表达 ResultSet、序号、类型、医生、科室、日期、时段和状态；Java 负责零条、唯一、多条三态匹配。多条匹配会生成新的缩小 ResultSet并要求用户继续选择，模型不得自行任选。
 - [x] 医生详情、单医生号源和批量号源的模型 Schema 不再接受 `doctorId` / `doctorIds` / `departmentId`；服务端适配器只从 AgentState 中的可信 Candidate 展开内部 ID。创建/取消准备 Tool 均为空参数 Schema。
 - [x] 删除 `PatientAppointmentContextStore`、`PatientScheduleSlotReference` 和“取消第 N 条”专用正则旁路；预约、号源、医生、科室与候补现在使用同一 ResultSet/Candidate 机制。
-- [x] 创建预约统一为 `SCHEDULE_SLOT ResultSet → selectedCandidate → PendingAction → WAITING_CONFIRMATION → 按钮确认 → 重新查询实时号源 → POST`；`scheduleSlotId`、`doctorId`、日期和服务端生成的 `requestId` 冻结在 PendingAction payload 中。
-- [x] 取消预约统一为 `APPOINTMENT ResultSet → 按 BOOKED/日期/医生/科室/时段/序号选择 → PendingAction → WAITING_CONFIRMATION → 按钮确认 → 重新查询归属与状态 → PATCH`；`appointmentId` 冻结后不再交给模型重选。
-- [x] PendingAction 增加 `conversationId` 绑定；确认/拒绝接口同时校验 actionId、userId、conversationId、状态和过期时间。相同会话重复准备会复用原 actionId，避免文字“确认”或模型重试生成第二张卡。
-- [x] 文本“确认”只返回原确认卡并提示点击按钮；“算了”等明确放弃表达由服务端真正把当前 Action 转为 `REJECTED`。动作终态会清除 pending/selection/task，但保留最近 ResultSet。
+- [x] 创建预约统一为 `SCHEDULE_SLOT ResultSet → selectedCandidate → PendingAction → 按钮确认 → 重新查询实时号源 → POST`；是否等待确认直接由 `pendingAction != null` 判断，`scheduleSlotId`、`doctorId`、日期和服务端生成的 `requestId` 冻结在 PendingAction payload 中。
+- [x] 取消预约统一为 `APPOINTMENT ResultSet → 按 BOOKED/日期/医生/科室/时段/序号选择 → PendingAction → 按钮确认 → 重新查询归属与状态 → PATCH`；`appointmentId` 冻结后不再交给模型重选。
+- [x] PendingAction 增加 `conversationId` 绑定；确认/拒绝接口同时校验 actionId、userId、conversationId、状态和过期时间。只有当前仍为 `PENDING` 时，重复准备才复用原 actionId；`REJECTED`、`EXPIRED`、`FAILED`、`SUCCEEDED` 都是不可恢复终态，再次明确请求必须重新校验并生成具有新 actionId 的新卡。
+- [x] 文本“确认”只返回原确认卡并提示点击按钮；“算了”等明确放弃表达由服务端真正把当前 Action 转为 `REJECTED`。动作终态会清除 pending/selection，但保留最近 ResultSet。
+- [x] `AgentState` 提示摘要现在始终显式输出 `pendingAction=none` 或活动卡状态；系统规则和五个 prepare Tool 描述共同声明：ChatMemory 中出现过旧确认文本不代表旧卡仍有效，终态旧卡永久不可再次确认。前端保留旧终态卡作为历史记录，新请求追加新的 `PENDING` 卡，不复活旧卡。
 - [x] 前端确认与拒绝请求携带当前 conversationId；收到相同 actionId 时更新原卡而不是追加重复卡，并能用 `actionUpdate` 同步聊天中触发的放弃结果。
 - [x] 确认卡的医生、科室、日期、时段等非敏感预览字段同时写入助手文本和 ChatMemory；前端仍渲染结构化卡片。这样后续“上文提到的那一条”可以用预览字段匹配 ResultSet，而 actionId、scheduleSlotId、appointmentId 和 requestId 不进入模型文本。
 - [x] `AgentState.lastActionResult` 保存最近一次按钮确认/拒绝的服务端终态及非敏感预览。确认接口成功后即使没有新的聊天消息，下一轮也能看到 `CREATE_APPOINTMENT + SUCCEEDED`；该终态优先于确认前的“尚未执行”文本，用户随后说“不想挂了”时只能进入取消流程，不能声称预约未创建。
 - [x] 参考 [Spring AI Chat Memory](https://docs.spring.io/spring-ai/reference/api/chat-memory.html) 的 conversation-id 隔离，以及 [Spring AI Tools / ToolContext](https://docs.spring.io/spring-ai/reference/api/tools.html) 将请求级安全上下文与模型参数分离的做法；本项目只把自然语言留给 ChatMemory，把真实业务引用放入独立 AgentState。
 - [x] 同时参考 [LangGraph Persistence](https://langchain-ai.github.io/langgraph/concepts/persistence/) 的 thread-scoped state/checkpoint 思路和 HITL 恢复同一动作参数的原则；本项目没有照搬图运行时、Reducer、持久化 Checkpointer 或依赖，只保留会话作用域 State 和冻结 PendingAction 这两个适用模式。
+- [x] 终态重试语义继续参考 [Spring AI Tool Calling](https://docs.spring.io/spring-ai/reference/api/tools.html) 的“应用拥有 Tool 执行与审批门”原则，以及 [LangGraph HITL Interrupts](https://langchain-ai.github.io/langgraph/how-tos/create-react-agent-hitl/) 将一次人工决策绑定到一次具体 interrupt 的模式；本项目没有引入自定义 ToolAdvisor、图运行时或 Checkpointer，而是在现有 PendingAction 上实现不可变 Action Attempt。
+
+## 已完成：AgentState 最小业务数据重构
+
+- [x] 删除持久化 `AgentPhase` 和 `AgentTaskType`。查询、RAG、闲聊属于当前轮行为，不再以 `QUERY → NONE` 等形式写入会话 State，也不用于长期意图路由。
+- [x] 普通聊天和知识问答只读取必要的 State 摘要，不改变 ResultSet、选择对象或 PendingAction；“查询下周医生 → 无关问答 → 刚才第二个医生”仍可从原 ResultSet 确定真实业务 ID。
+- [x] 查询只追加 ResultSet并移动 `currentResultSetId`；唯一选择只更新 `selectedCandidate`；写操作准备只保存自带 `PatientActionType` 和状态的 PendingAction，避免同一业务含义在 `activeTask`、`phase`、PendingAction 三处重复。
+- [x] 等待确认直接由 `pendingAction != null` 判断。确认、拒绝、失败或过期后清理 PendingAction和选择对象，历史 ResultSet继续保留。
+- [x] 借鉴 Spring AI Alibaba Graph 与 LangGraph 的“字段独立、节点只提交局部更新”模式，以及 Dify 会话变量与单次运行变量分离的思路；没有引入图框架、Reducer、Checkpoint、Redis或数据库依赖。
+
+## 已完成：患者五类意图路由与动态 Tool 白名单
+
+- [x] 新增无状态 `PatientIntentRouter`，每轮在主 Patient Agent 之前进行一次短分类，输出可多选的 `CHAT`、`QUERY`、`RAG`、`WRITE` 或安全回退 `ALL`。路由结果是本轮执行策略，不写入 AgentState，也不会把一次查询误变成长期 `activeTask`。
+- [x] 路由器使用独立的 `statelessChatClient`、最多最近 6 条消息和精简业务 State 摘要；主 Agent 仍使用原有约 20 轮 ChatMemory。路由摘要只含 ResultSet 类型、描述、数量、选择展示文本和动作状态，不包含 doctorId、appointmentId、scheduleSlotId、waitlistId 或 resultSetId。
+- [x] 不采用未经校准的数字“置信度”。路由模型显式返回 `uncertain`；Java 对 JSON、路由名称和组合关系做确定性校验。模型明确不确定、输出非法、`CHAT` 与工具路由冲突、超时或调用异常时统一回退 `ALL`。
+- [x] 多意图直接取工具组并集，不因多意图自动回退。例如“查询下周一号源，没有号就加入候补”路由为 `QUERY + WRITE`；真正不清楚“刚才那个”所指且上下文不足时才使用 `ALL`。
+- [x] `CHAT` 不注册 Tool；`QUERY` 注册 7 个业务只读 Tool 与 `select_patient_candidate`；`RAG` 只注册 `search_hospital_policy`；`WRITE` 注册查询/选择前置工具与 5 个仅生成确认卡的 prepare Tool；`ALL` 注册当前全部 14 个安全模型工具。
+- [x] 窄路由使用显式 Tool 名称白名单并默认拒绝未知工具；未来新增 Tool 必须明确归组，避免仅靠“不是 RAG 就当 QUERY”的反向判断扩大权限。
+- [x] `ALL` 的边界严格限定为 `PatientSpringAiTools.callbacks()` 中的安全工具。按钮确认/拒绝 REST 接口、ActionHandler、HealthyApiClient 和真实医院写接口永远不会暴露给模型；写入仍必须经过 PendingAction、HITL 按钮确认和实时复核。
+- [x] `PatientChatService` 根据路由结果按请求调用 Spring AI `.tools(...)`；`CHAT` 时完全不传工具定义。路由调用的输入/输出 Token 合并进患者响应的总 Token，避免只显示主 Agent 消耗而低估真实成本。
+- [x] 参考 [Spring AI Tool Calling](https://docs.spring.io/spring-ai/reference/api/tools.html) 的按请求 Tool 注册能力，以及 Dify Question Classifier、LangGraph 条件分支的“分类后进入受限分支、无法判断时走保守路径”模式。只借鉴路由和回退原则，没有引入 Dify、LangGraph、额外状态机或新基础设施依赖。
+
+## 已完成：患者聊天 SSE 流式输出与输入框焦点修复
+
+- [x] 新增 `POST /api/agent/patient/chat/messages/stream`，以 UTF-8 `text/event-stream` 返回 `delta`、`complete`、`error` 三类事件；原 `/messages` JSON 接口继续保留，避免破坏现有调用方。
+- [x] 主 Agent 使用 Spring AI 2.0.1 原生 `ChatClient.stream().chatResponse()`。继续复用框架的 `ToolCallingAdvisor`、ChatMemory Advisor、动态 Tool 白名单和 ToolContext，没有自行重写 Tool Calling 循环。
+- [x] 只有纯 `CHAT` 展示模型真实增量。`QUERY`、`WRITE`、`RAG`、复合路由和回退 `ALL` 可能执行多步 Tool 链，因此不发布执行过程中不断变化的 `directAnswer`；整条链完成后只发送一次最终 Tool/RAG 文本，再用 `complete` 返回引用、Token、模型、Tool 轨迹、PendingAction 和 actionUpdate。这样不会先闪现预约列表，随后又被取消确认卡覆盖，也不通过拆字和延迟制造“假流式”。
+- [x] 流中断统一转换为不泄露异常细节的业务错误事件；路由 Token 与主模型 Token 仍合并统计。Spring MVC 异步超时和 Nginx SSE 读取超时设置为 180 秒，SSE 路径关闭代理缓冲和 gzip。
+- [x] 前端用 `fetch + ReadableStream` 解析 POST SSE，不依赖只能 GET 的 `EventSource`；消息气泡随增量更新并显示流式光标，最终事件再补齐引用、Token、工具标签和确认卡。
+- [x] 发送期间不再禁用 textarea，发送按钮和重复提交仍受 `sending` 保护；发送后、请求结束后、确认/拒绝动作后以及新建对话后都会通过模板 ref 重新聚焦。用户等待回答时可以继续输入下一条内容。
+- [x] 参考 [Spring AI ChatClient Streaming](https://docs.spring.io/spring-ai/reference/api/chatclient.html#_streaming_responses) 和 [Spring AI Tool Calling](https://docs.spring.io/spring-ai/reference/api/tools.html) 的原生流式工具循环；没有采用手写 Tool 循环或按字符定时输出。
 
 ## 工程实现约定
 
@@ -231,16 +314,27 @@
 
 后续 RAG 阶段计划接入：
 
-1. 使用测试文档对比关键词检索和向量检索，再决定是否加入混合检索与 reranker。
-2. 根据真实问题继续优化当前模型路由，再逐步接入通用医疗科普和预约写操作 Tool Calling。
-3. 患者 RAG 正式开放前，再评估是否需要知识发布控制；当前测试不增加发布机制。
-4. 结合真实问题调整最低相关分、Top K、切块策略，并评估混合检索与 reranker。
+1. 继续补充三段以上的长制度和相似制度资料；当前保持 Top 5 评测口径，不增加 Top1/Top3 指标。
+2. 如果两次 Elasticsearch 查询的延迟或候选量成为问题，再评估原生单请求 RRF；当前不为尚未出现的性能问题增加 Low Level REST 实现。
+3. 结合负例校准最低相关分和无答案判定，再决定是否加入 reranker 或 Query Rewrite。
+4. 患者 RAG 正式开放前，再评估是否需要知识发布控制；当前测试不增加发布机制。
 5. 文档量或处理时间明显增长后，再评估异步任务状态和消息队列；Redis 暂不引入。
 
 ## 本次验证记录
 
-- 后端：`BUILD SUCCESS`，122 个测试，0 failures，0 errors；覆盖 PDF、DOCX、Markdown 解析、预览截断、简单切块、Embedding 客户端、索引服务、向量检索、Spring AI Tool 注册与 ToolContext、40 条窗口记忆、统一 AgentState/ResultSet/Candidate 选择、旧/新 ResultSet 回切、会话隔离、ResultSet 上限、确认预览写入 ChatMemory、按钮动作终态回写 State、缺少确认会话体的 fail-closed 错误、RAG/Tool 编排、HTTP Tool 适配器、批量号源查询、拒绝模型业务 ID、五种写操作 HITL、重复 PendingAction 复用、号源/候补来源校验、`requestId` 幂等重试、候补写超时反查、`offerExpireTime` 动态 TTL、确认前实时复查、通用动作 Handler 注册与 fail-closed、患者聊天接口、本地开发认证与角色权限。
+- HITL 终态卡重试新增 2 项回归后，全量后端 153 项测试通过，0 failures、0 errors。定向 36 项测试覆盖 `pendingAction=none` 明示、五个 prepare Tool 的终态规则、PENDING 重试复用 actionId、REJECTED 后重新校验并生成不同 actionId、旧 actionId 不可确认；全部使用 Mock/内存数据，没有调用真实医院取消或其他写接口。
+- HITL 终态重试版本已重新构建并替换 `healthy-agent-backend`；容器状态为 `healthy`，`GET /actuator/health` 返回 `UP`。本次未改动或重启前端，也没有调用任何医院查询或写接口。
+- 患者 SSE 流式输出新增 4 项后端回归后，全量后端 151 项测试通过，0 failures、0 errors；前端 `vue-tsc --noEmit` 与 Vite 生产构建成功（44 个模块）。测试覆盖纯 CHAT 增量事件、最终元数据、Token 汇总、流异常安全映射、UTF-8 SSE Controller 输出，以及“Tool 链先查询全部预约、再生成取消确认卡”时不向前端发布中间预约列表。
+- 流式版本已重新构建并替换 Agent 前后端容器，两者均为 `healthy`，后端健康接口返回 `UP`、前端返回 HTTP 200。通过 `http://127.0.0.1:8090` 完成一次无业务 Tool 的真实 SSE 短问答：收到多个增量事件和唯一 complete 事件，首个事件约 1.07 秒到达、总耗时约 1.42 秒；耗时仅为本次开发环境样本，不作为性能承诺。本次没有调用医院写接口。
+- 修复 Tool 链中间预约列表被最终取消确认卡覆盖的问题后，已重新构建并替换 `healthy-agent-backend`；容器为 `healthy`，健康接口返回 `UP`。使用隔离测试用户完成纯 CHAT SSE 冒烟，收到最终文本和唯一 `complete` 事件；未调用查询预约、取消预约或其他医院业务接口。
+- 五类意图路由版本已重新构建并替换 `healthy-agent-backend` 容器；容器状态为 `healthy`，`http://127.0.0.1:8091/actuator/health` 返回 `UP`。本次只重启 Agent 后端，没有重启前端、Elasticsearch 或 MinIO。
+- 五类意图路由定向测试 25 项通过；后端执行 `mvn -pl backend clean test` 共 147 项通过，0 failures、0 errors。新增覆盖复合 `QUERY + WRITE`、不确定/非法/冲突输出回退 ALL、路由调用失败回退、最小上下文、路由 State 不含内部 ID、五组 Tool 精确白名单、未知 Tool 在窄路由下默认拒绝、CHAT 零 Tool、QUERY 按请求注入及路由 Token 合并统计；全部使用 Mock/内存数据，没有调用真实医院写接口。
+- AgentState 最小化重构定向回归 22 项通过；后端全量 135 项测试通过，0 failures、0 errors。新增覆盖“业务查询产生 ResultSet → 中间进行无关普通问答 → 原 ResultSet 仍可引用”，并验证 State 摘要不再包含 `phase` 或 `activeTask`。测试全部使用 Mock/内存数据，没有执行任何真实医院写操作。
+- 后端：`BUILD SUCCESS`，133 个测试，0 failures，0 errors；新增覆盖固定评测集加载与校验、BM25 不调用 Embedding、Vector/BM25/HYBRID 策略选择、RRF 跨分支融合与单分支去重、HitRate 与其他检索指标计算和管理员评测接口权限；原有 AgentState、Tool Calling、HITL、RAG、文档管理与权限回归继续通过。
 - 前端：TypeScript 检查和 Vite 生产构建成功，44 个模块完成转换。
+- RAG 阶段 1/2 与最小 RRF 版本已重建并替换前后端容器；后端健康检查返回 `UP`，管理端通过同一页面完成 Vector/BM25/HYBRID 单题检索和固定评测。
+- 编号 05～24 的 20 份新增虚构制度均已通过 Nginx → Agent → MinIO → BGE-M3 → Elasticsearch 真实闭环上传和索引；当前知识库 25 份文档、37 个 chunk 全部已索引。
+- 104 条真实检索评测未调用聊天生成模型，因此没有产生回答 Token；Vector 与 Hybrid 评测调用 BGE-M3 查询 Embedding，BM25 评测只访问 Elasticsearch。
 - 本轮统一 State 回归全部使用 Mock/本地测试数据，没有创建或取消任何云端真实预约。
 - 针对页面截图中的回归完成运行态核对：截图请求来自 19:38 构建的旧容器，调用轨迹缺少 `select_patient_candidate`。已于 21:20 重建并仅重启 Agent 前后端；后端 `/actuator/health` 返回 HTTP 200，本地开发会话验证无 PendingAction 时输入“算了”由 `server-rule` 零 Tool 返回，不再生成“这次不预约”的模型回答。
 - 第二张截图中的“服务暂时不可用”定位为旧浏览器 JS 对新版确认接口发送了空请求体，并非 Healthy API 或号源异常，确认逻辑尚未开始、没有发生预约写入。确认/拒绝接口现在把缺少 conversationId 映射为 HTTP 400 / `40018` 明确会话错误，不再误报 HTTP 500；刷新页面后新版前端会发送 `{conversationId}`。

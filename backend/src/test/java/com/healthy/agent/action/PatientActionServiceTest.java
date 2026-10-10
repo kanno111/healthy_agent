@@ -8,7 +8,6 @@ import com.healthy.agent.common.AgentException;
 import com.healthy.agent.tool.HealthyApiClient;
 import com.healthy.agent.tool.ToolExecutionResult;
 import com.healthy.agent.state.AgentStateService;
-import com.healthy.agent.state.AgentTaskType;
 import com.healthy.agent.state.Candidate;
 import com.healthy.agent.state.CandidateResultSet;
 import com.healthy.agent.state.CandidateType;
@@ -29,6 +28,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -165,6 +165,38 @@ class PatientActionServiceTest {
     }
 
     @Test
+    void rejectedActionStaysTerminalAndRepeatedRequestCreatesNewAttempt() {
+        when(healthyApiClient.get("/api/user/appointments", AUTHORIZATION))
+                .thenReturn(ToolExecutionResult.success(appointments("BOOKED")));
+
+        ActionPreparationResult first = service.prepareCancellation(
+                CONVERSATION, appointmentCandidate(), AUTHORIZATION, 8L);
+        PatientActionResponse rejected = service.reject(
+                first.pendingAction().actionId(), CONVERSATION, 8L);
+        ActionPreparationResult second = service.prepareCancellation(
+                CONVERSATION, appointmentCandidate(), AUTHORIZATION, 8L);
+
+        assertThat(rejected.status()).isEqualTo(PatientActionStatus.REJECTED);
+        assertThat(second.pendingAction().status()).isEqualTo(PatientActionStatus.PENDING);
+        assertThat(second.pendingAction().actionId())
+                .isNotEqualTo(first.pendingAction().actionId());
+        assertThat(stateService.getPendingAction(CONVERSATION))
+                .contains(second.pendingAction());
+        assertThat(stateService.promptSummary(CONVERSATION))
+                .contains("pendingAction={type=CANCEL_APPOINTMENT, status=PENDING")
+                .contains("lastActionResult={type=CANCEL_APPOINTMENT, status=REJECTED");
+        assertThatThrownBy(() -> service.confirm(
+                first.pendingAction().actionId(), CONVERSATION, 8L, AUTHORIZATION))
+                .isInstanceOfSatisfying(AgentException.class,
+                        exception -> assertThat(exception.errorCode())
+                                .isEqualTo(AgentErrorCode.ACTION_STATE_CONFLICT));
+        verify(healthyApiClient, times(2))
+                .get("/api/user/appointments", AUTHORIZATION);
+        verify(healthyApiClient, never()).patch(
+                "/api/user/appointments/201/cancel", AUTHORIZATION);
+    }
+
+    @Test
     void confirmationTextKeepsPreviewFieldsInChatMemoryWithoutBusinessIds() {
         PendingActionView view = new PendingActionView(
                 "action-1", PatientActionType.CREATE_APPOINTMENT,
@@ -298,10 +330,8 @@ class PatientActionServiceTest {
 
         assertThat(preparation.ready()).isTrue();
         assertThat(preparation.pendingAction().type()).isEqualTo(PatientActionType.JOIN_WAITLIST);
-        assertThat(stateService.getOrCreate(CONVERSATION).phase())
-                .isEqualTo(com.healthy.agent.state.AgentPhase.WAITING_CONFIRMATION);
-        assertThat(stateService.getOrCreate(CONVERSATION).activeTask())
-                .isEqualTo(AgentTaskType.JOIN_WAITLIST);
+        assertThat(stateService.getPendingAction(CONVERSATION))
+                .contains(preparation.pendingAction());
         assertThat(preparation.pendingAction().toString())
                 .doesNotContain("scheduleSlotId");
         verify(healthyApiClient, never()).post(

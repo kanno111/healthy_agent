@@ -1,6 +1,6 @@
 # Healthy Agent RAG 与检索优化规划
 
-> 状态：规划中，尚未实施
+> 状态：阶段 1、阶段 2 和阶段 3 最小 RRF 已于 2026-10-09 完成；阶段 4 及以后尚未实施
 >
 > 创建日期：2026-10-09
 >
@@ -87,7 +87,7 @@
         DeepSeek 基于证据回答或明确拒答
 ```
 
-第一版优先使用 Elasticsearch 原生检索能力完成单次混合查询；如当前 Java Client 对目标 API 支持不完整，再评估使用官方 Low Level REST 调用，但不另建客户端侧排名系统。
+当前最小版继续使用 Elasticsearch 分别返回 BM25 与 kNN 排名，再由无状态 Java 代码按 `chunkId` 执行标准 RRF 公式。这样可以复用现有外部 BGE-M3 查询向量和两套已验证的检索方法，不增加依赖，也避免在尚未证明收益前改造索引。后续如果候选量或延迟成为问题，再评估 Elasticsearch 原生 RRF 单次请求；不会建立带业务状态的客户端排名系统。
 
 ## 6. 分阶段实施计划
 
@@ -104,7 +104,9 @@
 
 输出一份可重复运行的 `vector-baseline` 报告，后续所有策略与它比较。
 
-### 阶段 1：建立医院 RAG 人工标注评测集
+### 阶段 1：建立医院 RAG 人工标注评测集（已完成）
+
+完成记录：当前固定评测集为 `v3-2026-10-09`，共 104 条脱敏问题，其中 96 条可回答问题、8 条无答案/安全负例。编号 01～24 每份测试文档各有 3 条单文档正例，另有 24 条跨制度问题分别标注 2～3 个相关文档。管理员评测接口和页面同时提供 HitRate@K、Recall@K、标准 Precision@K、MRR、nDCG@K 和负例空召回率。标注采用稳定文件名，因为上传后 `documentId` 为运行时 UUID。详细结果见 `docs/RAG_RETRIEVAL_BASELINE_2026-10-09.md`。
 
 第一版准备 30～50 个问题，后续扩展到 80～100 个。至少覆盖：
 
@@ -133,7 +135,9 @@
 
 评测集只使用虚构或脱敏问题，不写入 JWT、患者姓名、手机号、身份证号、appointmentId 等信息。
 
-### 阶段 2：实现 BM25 基线
+### 阶段 2：实现 BM25 基线（已完成）
+
+完成记录：已在现有 Elasticsearch `content` 字段上实现独立 BM25 检索，管理端可在 Vector/BM25 之间切换；患者 RAG 仍默认使用 Vector。真实 13 文档、40 问题、Top 5 基线结果为：BM25 Recall 1.0000、MRR 0.9583、nDCG 0.9692；Vector Recall 1.0000、MRR 0.9861、nDCG 0.9897。两者的负例空召回率均为 0%，留待后续阈值和 Hybrid 阶段解决。
 
 在现有 `content` 字段上实现 Elasticsearch 全文检索，先不与向量结果融合。
 
@@ -146,7 +150,9 @@
 
 产出 `bm25-baseline`，与 `vector-baseline` 使用同一评测集比较。
 
-### 阶段 3：BM25 + BGE-M3 + RRF 混合检索
+### 阶段 3：BM25 + BGE-M3 + RRF 混合检索（最小版已完成）
+
+完成记录：新增 `HYBRID` 检索策略，每路取最近 50 个候选，以 `chunkId` 去重，采用 `rank_constant=60` 的无权重 RRF，最后裁剪到请求的 Top K。完整 v3 104 题 Top 5 下，BM25 HitRate/Recall 为 `1.0000/0.9965`，Vector 为 `0.9896/0.9792`，RRF 为 `0.9896/0.9809`。RRF 的 MRR `0.9635`、nDCG `0.9603` 略高于 Vector，但多正例完整召回仍同为 22/24，且同文档不同 chunk 无法合并证据的限制仍存在，因此患者 RAG 暂不切换默认策略。
 
 在一个检索请求中并行执行：
 
@@ -206,7 +212,7 @@ Query Rewrite 会增加一次模型调用，可能引入新含义，因此仅用
 RAG 检索优化完成后，继续降低 Agent Token：
 
 - 不把全部患者 Tool Schema 无条件发送给每轮模型。
-- 根据 `AgentState.phase`、`activeTask`、PendingAction 和粗粒度路由按请求提供 Tool。
+- 根据 PendingAction、可信业务引用和粗粒度路由按请求提供 Tool；查询、RAG、闲聊等单轮行为不写入会话级 `activeTask`。
 - RAG 问题只开放知识检索能力；写操作确认阶段不再开放无关准备 Tool。
 - 保持 Spring AI Tool resolution fallback 关闭，防止模型调用本轮未授权的 Tool。
 - 给 ChatMemory、RAG chunk、Tool Result 分别设置上下文预算。
@@ -244,6 +250,7 @@ Trace 至少记录：
 
 - `Recall@1/3/5`
 - `Precision@3/5`
+- `HitRate@K`（至少命中一个标注相关文档的问题比例）
 - `MRR`
 - `nDCG@5`
 - 无答案问题误召回率
@@ -305,7 +312,7 @@ LLM-as-Judge 只能作为辅助指标。核心检索指标必须依据人工标�
 5. 优化切块、Top K、阈值与上下文预算。
 6. 根据排序错误决定是否加入 Rerank。
 7. 只有必要时加入 Query Rewrite。
-8. 实施动态 Tool 白名单和 ChatMemory/Tool Result Token 预算。
+8. 动态 Tool 白名单已完成：五类意图路由按请求限制 Tool，路由器只读取最多 6 条上下文和精简 State；后续继续优化主 Agent 的 ChatMemory/Tool Result Token 预算。
 9. 增强可观测性和有限公共知识缓存。
 
 ## 11. 参考资料

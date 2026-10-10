@@ -42,11 +42,46 @@ export type KnowledgeSearchHit = {
   score: number
 }
 
+export type KnowledgeSearchStrategy = 'VECTOR' | 'BM25' | 'HYBRID'
+
 export type KnowledgeSearchResponse = {
   query: string
-  embeddingModel: string
+  strategy: KnowledgeSearchStrategy
+  embeddingModel: string | null
   limit: number
   results: KnowledgeSearchHit[]
+}
+
+export type KnowledgeRetrievalEvaluationCaseResult = {
+  id: string
+  category: string
+  question: string
+  shouldAnswer: boolean
+  expectedFileNames: string[]
+  returnedFileNames: string[]
+  firstRelevantRank: number
+  hitAtK: boolean
+  recallAtK: number
+  precisionAtK: number
+  reciprocalRank: number
+  ndcgAtK: number
+}
+
+export type KnowledgeRetrievalEvaluationResponse = {
+  datasetVersion: string
+  strategy: KnowledgeSearchStrategy
+  limit: number
+  totalCases: number
+  positiveCases: number
+  negativeCases: number
+  recallAtK: number
+  precisionAtK: number
+  hitRateAtK: number
+  mrr: number
+  ndcgAtK: number
+  negativeEmptyRate: number
+  evaluatedAt: string
+  cases: KnowledgeRetrievalEvaluationCaseResult[]
 }
 
 export type KnowledgeRagCitation = {
@@ -158,7 +193,8 @@ export async function buildKnowledgeDocumentIndex(
 export async function searchKnowledge(
   token: string,
   query: string,
-  limit: number
+  limit: number,
+  strategy: KnowledgeSearchStrategy = 'VECTOR'
 ): Promise<KnowledgeSearchResponse> {
   let response: Response
   try {
@@ -168,12 +204,33 @@ export async function searchKnowledge(
         ...agentRequestHeaders(token),
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ query, limit })
+      body: JSON.stringify({ query, limit, strategy })
     })
   } catch {
-    throw new ApiError('无法连接到向量检索服务，请稍后重试')
+    throw new ApiError('无法连接到知识检索服务，请稍后重试')
   }
-  return readApiResponse(response, '向量检索失败')
+  return readApiResponse(response, '知识检索失败')
+}
+
+export async function evaluateKnowledgeRetrieval(
+  token: string,
+  strategy: KnowledgeSearchStrategy,
+  limit: number
+): Promise<KnowledgeRetrievalEvaluationResponse> {
+  let response: Response
+  try {
+    response = await fetch('/api/agent/admin/knowledge/evaluations/retrieval', {
+      method: 'POST',
+      headers: {
+        ...agentRequestHeaders(token),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ strategy, limit })
+    })
+  } catch {
+    throw new ApiError('无法连接到检索评测服务，请稍后重试')
+  }
+  return readApiResponse(response, '检索评测失败')
 }
 
 export async function askKnowledge(

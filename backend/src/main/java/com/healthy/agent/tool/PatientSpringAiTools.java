@@ -32,6 +32,9 @@ public class PatientSpringAiTools {
     public static final String RAG_TOOL = "search_hospital_policy";
     public static final String SELECT_CANDIDATE = "select_patient_candidate";
     private static final int PATIENT_RAG_TOP_K = 3;
+    private static final String TERMINAL_ACTION_RETRY_RULE =
+            " 如果旧操作已经是 REJECTED、EXPIRED、FAILED 或 SUCCEEDED，旧确认卡永久不可再次确认；"
+                    + "当 AgentState.pendingAction=none 且用户再次明确请求时，必须调用本工具生成具有新 actionId 的新确认卡，不得让用户点击旧卡。";
 
     private final PatientReadToolRegistry readToolRegistry;
     private final PatientActionService actionService;
@@ -152,7 +155,8 @@ public class PatientSpringAiTools {
     private ToolCallback createPreparationCallback() {
         return callback(
                 PatientActionService.PREPARE_CREATE_APPOINTMENT,
-                "为 selectedCandidate 中已经由 Java 唯一确定的 SCHEDULE_SLOT 生成预约确认卡。本工具没有业务 ID 参数；如果尚未选择，先调用 select_patient_candidate。模型不得自行挑选号源。只有患者点击确认卡按钮后才真正创建预约。",
+                "为 selectedCandidate 中已经由 Java 唯一确定的 SCHEDULE_SLOT 生成预约确认卡。本工具没有业务 ID 参数；如果尚未选择，先调用 select_patient_candidate。模型不得自行挑选号源。只有患者点击确认卡按钮后才真正创建预约。"
+                        + TERMINAL_ACTION_RETRY_RULE,
                 json(parameters(Map.of(), List.of())),
                 true,
                 (input, toolContext) -> {
@@ -177,7 +181,8 @@ public class PatientSpringAiTools {
     private ToolCallback cancelPreparationCallback() {
         return callback(
                 PatientActionService.PREPARE_CANCEL_APPOINTMENT,
-                "为 selectedCandidate 中已经由 Java 唯一确定的 BOOKED 预约生成取消确认卡。本工具没有业务 ID 参数；如果尚未选择，先调用 list_my_appointments，再调用 select_patient_candidate 按日期、医生、科室、时段或序号选择。模型不得生成 appointmentId。",
+                "为 selectedCandidate 中已经由 Java 唯一确定的 BOOKED 预约生成取消确认卡。本工具没有业务 ID 参数；如果尚未选择，先调用 list_my_appointments，再调用 select_patient_candidate 按日期、医生、科室、时段或序号选择。模型不得生成 appointmentId。"
+                        + TERMINAL_ACTION_RETRY_RULE,
                 json(parameters(Map.of(), List.of())),
                 true,
                 (input, toolContext) -> {
@@ -202,7 +207,8 @@ public class PatientSpringAiTools {
     private ToolCallback joinWaitlistPreparationCallback() {
         return callback(
                 PatientActionService.PREPARE_JOIN_WAITLIST,
-                "为 selectedCandidate 中由 Java 唯一确定且余号为 0 的 SCHEDULE_SLOT 生成加入候补确认卡。无业务 ID 参数；先查询包含无余号班次的号源并调用 select_patient_candidate。只有点击确认卡后才写入。",
+                "为 selectedCandidate 中由 Java 唯一确定且余号为 0 的 SCHEDULE_SLOT 生成加入候补确认卡。无业务 ID 参数；先查询包含无余号班次的号源并调用 select_patient_candidate。只有点击确认卡后才写入。"
+                        + TERMINAL_ACTION_RETRY_RULE,
                 json(parameters(Map.of(), List.of())),
                 true,
                 (input, toolContext) -> {
@@ -229,7 +235,8 @@ public class PatientSpringAiTools {
     private ToolCallback cancelWaitlistPreparationCallback() {
         return callback(
                 PatientActionService.PREPARE_CANCEL_WAITLIST,
-                "为 selectedCandidate 中由 Java 唯一确定的 WAITING 候补生成取消确认卡。无业务 ID 参数；先调用 list_my_waitlists，再调用 select_patient_candidate 按序号或业务条件选择。模型不得生成 waitlistId。",
+                "为 selectedCandidate 中由 Java 唯一确定的 WAITING 候补生成取消确认卡。无业务 ID 参数；先调用 list_my_waitlists，再调用 select_patient_candidate 按序号或业务条件选择。模型不得生成 waitlistId。"
+                        + TERMINAL_ACTION_RETRY_RULE,
                 json(parameters(Map.of(), List.of())),
                 true,
                 (input, toolContext) -> {
@@ -255,7 +262,8 @@ public class PatientSpringAiTools {
     private ToolCallback confirmWaitlistPreparationCallback() {
         return callback(
                 PatientActionService.PREPARE_CONFIRM_WAITLIST,
-                "为 selectedCandidate 中由 Java 唯一确定的 OFFERED 候补生成名额确认卡。确认成功会创建预约。无业务 ID 参数；先调用 list_my_waitlists，再选择 OFFERED 记录。模型不得生成 waitlistId。",
+                "为 selectedCandidate 中由 Java 唯一确定的 OFFERED 候补生成名额确认卡。确认成功会创建预约。无业务 ID 参数；先调用 list_my_waitlists，再选择 OFFERED 记录。模型不得生成 waitlistId。"
+                        + TERMINAL_ACTION_RETRY_RULE,
                 json(parameters(Map.of(), List.of())),
                 true,
                 (input, toolContext) -> {

@@ -80,7 +80,7 @@ public class KnowledgeChunkRepository {
         }
     }
 
-    public List<KnowledgeSearchHit> search(List<Float> queryVector, int limit) {
+    public List<KnowledgeSearchHit> searchVector(List<Float> queryVector, int limit) {
         try {
             ensureIndex();
             int candidates = Math.max(50, limit * 10);
@@ -114,6 +114,42 @@ public class KnowledgeChunkRepository {
             return List.copyOf(results);
         } catch (Exception exception) {
             log.warn("Failed to search Elasticsearch knowledge chunks: {}: {}",
+                    exception.getClass().getSimpleName(), exception.getMessage());
+            throw new AgentException(AgentErrorCode.INDEX_UNAVAILABLE);
+        }
+    }
+
+    public List<KnowledgeSearchHit> searchBm25(String query, int limit) {
+        try {
+            ensureIndex();
+            var response = client.search(request -> request
+                            .index(indexName)
+                            .size(limit)
+                            .source(source -> source.filter(filter -> filter
+                                    .excludes("embedding", "documentSha256", "embeddingModel", "indexedAt")))
+                            .query(searchQuery -> searchQuery.match(match -> match
+                                    .field("content")
+                                    .query(query))),
+                    JsonData.class);
+
+            List<KnowledgeSearchHit> results = new ArrayList<>();
+            int rank = 1;
+            for (var hit : response.hits().hits()) {
+                JsonData sourceData = hit.source();
+                if (sourceData == null) {
+                    continue;
+                }
+                JsonObject source = sourceData.toJson().asJsonObject();
+                results.add(new KnowledgeSearchHit(
+                        rank++, source.getString("chunkId"), source.getString("documentId"),
+                        source.getString("fileName"), source.getString("contentType"),
+                        source.getInt("chunkIndex"), source.getString("content"),
+                        hit.score() == null ? 0.0d : hit.score()
+                ));
+            }
+            return List.copyOf(results);
+        } catch (Exception exception) {
+            log.warn("Failed to BM25 search Elasticsearch knowledge chunks: {}: {}",
                     exception.getClass().getSimpleName(), exception.getMessage());
             throw new AgentException(AgentErrorCode.INDEX_UNAVAILABLE);
         }

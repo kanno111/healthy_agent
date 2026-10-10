@@ -4,6 +4,9 @@ server:
 spring:
   application:
     name: healthy-agent
+  mvc:
+    async:
+      request-timeout: ${AGENT_CHAT_STREAM_TIMEOUT:180s}
   ai:
     model:
       chat: openai

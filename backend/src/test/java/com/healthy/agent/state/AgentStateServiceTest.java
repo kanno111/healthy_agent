@@ -57,13 +57,47 @@ class AgentStateServiceTest {
         assertThat(morning.status()).isEqualTo(CandidateSelectionResult.Status.AMBIGUOUS);
         assertThat(morning.candidates()).extracting(Candidate::businessId)
                 .containsExactly(101L, 102L);
-        assertThat(service.getOrCreate(CONVERSATION).phase())
-                .isEqualTo(AgentPhase.WAITING_SELECTION);
 
         CandidateSelectionResult second = service.selectCandidate(
                 CONVERSATION,
                 new CandidateSelector(null, 2, null, null, null, null, null, null));
         assertThat(second.selected().businessId()).isEqualTo(102L);
+    }
+
+    @Test
+    void readingStateForAnUnrelatedTurnKeepsBusinessSnapshotsWithoutTaskMarkers() {
+        CandidateResultSet resultSet = service.addResultSet(
+                CONVERSATION, "下周有号医生", CandidateType.DOCTOR,
+                List.of(doctor(11, "张医生"), doctor(15, "李医生")));
+
+        service.getOrCreate(CONVERSATION);
+        String summary = service.promptSummary(CONVERSATION);
+
+        assertThat(service.getCurrentResultSet(CONVERSATION))
+                .get().extracting(CandidateResultSet::resultSetId)
+                .isEqualTo(resultSet.resultSetId());
+        assertThat(service.getOrCreate(CONVERSATION).recentResultSets())
+                .containsExactly(resultSet);
+        assertThat(summary)
+                .contains("currentResultSetId=" + resultSet.resultSetId())
+                .contains("pendingAction=none")
+                .doesNotContain("activeTask", "phase");
+    }
+
+    @Test
+    void routingSummaryKeepsUsefulReferencesButOmitsInternalIds() {
+        CandidateResultSet resultSet = service.addResultSet(
+                CONVERSATION, "下周神经内科有号医生", CandidateType.DOCTOR,
+                List.of(doctor(987654, "李医生")));
+        service.selectCandidate(CONVERSATION,
+                new CandidateSelector(resultSet.resultSetId(), 1, CandidateType.DOCTOR,
+                        null, null, null, null, null));
+
+        String summary = service.routingSummary(CONVERSATION);
+
+        assertThat(summary)
+                .contains("type=DOCTOR", "description=下周神经内科有号医生", "李医生")
+                .doesNotContain(resultSet.resultSetId(), "987654", "currentResultSetId");
     }
 
     @Test

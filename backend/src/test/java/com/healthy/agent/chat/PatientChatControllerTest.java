@@ -11,13 +11,20 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import reactor.core.publisher.Flux;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.hamcrest.Matchers.containsString;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(PatientChatController.class)
@@ -43,6 +50,7 @@ class PatientChatControllerTest {
                         .header(GatewayIdentityInterceptor.USER_ID_HEADER, "8")
                         .header(GatewayIdentityInterceptor.ROLE_HEADER, "PATIENT")
                         .header("Authorization", "Bearer cloud-token")
+                        .characterEncoding(StandardCharsets.UTF_8)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"conversationId\":\"" + conversationId
                                 + "\",\"message\":\"查询我的预约\"}"))
@@ -54,6 +62,42 @@ class PatientChatControllerTest {
 
         verify(chatService).answer(
                 "查询我的预约", "Bearer cloud-token", 8L, conversationId);
+    }
+
+    @Test
+    void patientCanReceiveSseDeltasAndFinalMetadata() throws Exception {
+        String conversationId = "11111111-1111-4111-8111-111111111111";
+        PatientChatResponse completed = new PatientChatResponse(
+                "你好", "你好，有什么可以帮你？", "TOOL",
+                "deepseek-flash", null, List.of(),
+                new TokenUsage(20, 8, 28), List.of());
+        when(chatService.stream("你好", "Bearer cloud-token", 8L, conversationId))
+                .thenReturn(Flux.just(
+                        PatientChatStreamEvent.delta("你好，"),
+                        PatientChatStreamEvent.delta("有什么可以帮你？"),
+                        PatientChatStreamEvent.complete(completed)));
+
+        MvcResult started = mockMvc.perform(post("/api/agent/patient/chat/messages/stream")
+                        .header(GatewayIdentityInterceptor.USER_ID_HEADER, "8")
+                        .header(GatewayIdentityInterceptor.ROLE_HEADER, "PATIENT")
+                        .header("Authorization", "Bearer cloud-token")
+                        .characterEncoding(StandardCharsets.UTF_8)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.TEXT_EVENT_STREAM)
+                        .content("{\"conversationId\":\"" + conversationId
+                                + "\",\"message\":\"你好\"}"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mockMvc.perform(asyncDispatch(started))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_EVENT_STREAM))
+                .andExpect(content().string(containsString("\"type\":\"delta\"")))
+                .andExpect(content().string(containsString("你好，")))
+                .andExpect(content().string(containsString("\"type\":\"complete\"")))
+                .andExpect(content().string(containsString("\"totalTokens\":28")));
+
+        verify(chatService).stream("你好", "Bearer cloud-token", 8L, conversationId);
     }
 
     @Test

@@ -50,11 +50,6 @@ public class AgentStateService {
             trimOldResultSets(state);
             state.currentResultSetId(resultSet.resultSetId());
             state.selectedCandidate(null);
-            if (state.pendingAction() == null) {
-                state.activeTask(AgentTaskType.QUERY);
-                state.phase(resultSet.candidates().isEmpty()
-                        ? AgentPhase.IDLE : AgentPhase.WAITING_SELECTION);
-            }
         });
         return resultSet;
     }
@@ -81,7 +76,6 @@ public class AgentStateService {
             CandidateResultSet source = resolveSource(state, selector.resultSetId());
             if (source == null) {
                 state.selectedCandidate(null);
-                keepConfirmationOrSet(state, AgentPhase.WAITING_SELECTION);
                 result.set(new CandidateSelectionResult(
                         CandidateSelectionResult.Status.NOT_FOUND, null, null, List.of(),
                         "没有找到可引用的查询结果，请先重新查询。"));
@@ -98,7 +92,6 @@ public class AgentStateService {
             if (matches.isEmpty()) {
                 state.selectedCandidate(null);
                 state.currentResultSetId(source.resultSetId());
-                keepConfirmationOrSet(state, AgentPhase.WAITING_SELECTION);
                 result.set(new CandidateSelectionResult(
                         CandidateSelectionResult.Status.NOT_FOUND, null, source, List.of(),
                         "在“" + source.description() + "”中没有找到符合条件的项目。"));
@@ -109,7 +102,6 @@ public class AgentStateService {
                 Candidate selected = matches.getFirst();
                 state.selectedCandidate(selected);
                 state.currentResultSetId(source.resultSetId());
-                keepConfirmationOrSet(state, AgentPhase.IDLE);
                 result.set(new CandidateSelectionResult(
                         CandidateSelectionResult.Status.SELECTED, selected, source, matches,
                         "已确定选择：" + selected.displayText()));
@@ -127,7 +119,6 @@ public class AgentStateService {
             }
             state.currentResultSetId(narrowed.resultSetId());
             state.selectedCandidate(null);
-            keepConfirmationOrSet(state, AgentPhase.WAITING_SELECTION);
             result.set(new CandidateSelectionResult(
                     CandidateSelectionResult.Status.AMBIGUOUS, null, narrowed, matches,
                     "找到多个符合条件的项目，请继续选择。"));
@@ -136,10 +127,7 @@ public class AgentStateService {
     }
 
     public void setSelectedCandidate(String conversationId, Candidate candidate) {
-        update(conversationId, state -> {
-            state.selectedCandidate(candidate);
-            keepConfirmationOrSet(state, AgentPhase.IDLE);
-        });
+        update(conversationId, state -> state.selectedCandidate(candidate));
     }
 
     public Optional<Candidate> selectedCandidate(String conversationId) {
@@ -164,14 +152,9 @@ public class AgentStateService {
 
     public void prepareAction(
             String conversationId,
-            AgentTaskType task,
             PendingActionView pendingAction
     ) {
-        update(conversationId, state -> {
-            state.activeTask(task);
-            state.pendingAction(pendingAction);
-            state.phase(AgentPhase.WAITING_CONFIRMATION);
-        });
+        update(conversationId, state -> state.pendingAction(pendingAction));
     }
 
     public Optional<PendingActionView> getPendingAction(String conversationId) {
@@ -191,8 +174,6 @@ public class AgentStateService {
                     && state.pendingAction().actionId().equals(expectedActionId)) {
                 state.pendingAction(null);
                 state.selectedCandidate(null);
-                state.phase(AgentPhase.IDLE);
-                state.activeTask(AgentTaskType.NONE);
             }
         });
     }
@@ -209,8 +190,6 @@ public class AgentStateService {
                 state.lastActionResult(result);
                 state.pendingAction(null);
                 state.selectedCandidate(null);
-                state.phase(AgentPhase.IDLE);
-                state.activeTask(AgentTaskType.NONE);
             }
         });
     }
@@ -219,21 +198,10 @@ public class AgentStateService {
         return Optional.ofNullable(getOrCreate(conversationId).lastActionResult());
     }
 
-    public void clearTask(String conversationId) {
-        update(conversationId, state -> {
-            state.pendingAction(null);
-            state.selectedCandidate(null);
-            state.phase(AgentPhase.IDLE);
-            state.activeTask(AgentTaskType.NONE);
-        });
-    }
-
     public String promptSummary(String conversationId) {
         AgentState state = getOrCreate(conversationId);
         StringBuilder summary = new StringBuilder();
-        summary.append("phase=").append(state.phase())
-                .append(", activeTask=").append(state.activeTask())
-                .append(", currentResultSetId=")
+        summary.append("currentResultSetId=")
                 .append(state.currentResultSetId() == null ? "null" : state.currentResultSetId())
                 .append('\n');
         if (state.selectedCandidate() != null) {
@@ -241,6 +209,19 @@ public class AgentStateService {
                     .append(state.selectedCandidate().type())
                     .append(", displayText=")
                     .append(safeSummary(state.selectedCandidate().displayText()))
+                    .append("}\n");
+        }
+        PendingActionView pending = state.pendingAction();
+        summary.append("pendingAction=");
+        if (pending == null) {
+            summary.append("none\n");
+        } else {
+            summary.append("{type=")
+                    .append(pending.type())
+                    .append(", status=")
+                    .append(pending.status())
+                    .append(", expiresAt=")
+                    .append(pending.expiresAt())
                     .append("}\n");
         }
         if (state.lastActionResult() != null) {
@@ -264,6 +245,63 @@ public class AgentStateService {
                     .append(", count=").append(set.candidates().size()).append("}\n");
         }
         return summary.append(']').toString();
+    }
+
+    /**
+     * Provides the intent router with only the business signals needed to understand references.
+     * Internal business IDs and result-set IDs deliberately stay out of this summary.
+     */
+    public String routingSummary(String conversationId) {
+        AgentState state = getOrCreate(conversationId);
+        StringBuilder summary = new StringBuilder();
+        CandidateResultSet current = findResultSet(state, state.currentResultSetId()).orElse(null);
+        if (current == null) {
+            summary.append("currentResultSet=none\n");
+        } else {
+            summary.append("currentResultSet={type=").append(current.type())
+                    .append(", description=").append(safeSummary(current.description()))
+                    .append(", count=").append(current.candidates().size()).append("}\n");
+        }
+
+        summary.append("recentResultSets=[");
+        int start = Math.max(0, state.recentResultSets().size() - 3);
+        for (int index = start; index < state.recentResultSets().size(); index++) {
+            CandidateResultSet resultSet = state.recentResultSets().get(index);
+            if (index > start) summary.append(", ");
+            summary.append("{type=").append(resultSet.type())
+                    .append(", description=").append(safeSummary(resultSet.description()))
+                    .append(", count=").append(resultSet.candidates().size()).append('}');
+        }
+        summary.append("]\n");
+
+        Candidate selected = state.selectedCandidate();
+        summary.append("selectedCandidate=");
+        if (selected == null) {
+            summary.append("none\n");
+        } else {
+            summary.append("{type=").append(selected.type())
+                    .append(", displayText=").append(safeSummary(selected.displayText()))
+                    .append("}\n");
+        }
+
+        PendingActionView pending = state.pendingAction();
+        summary.append("pendingAction=");
+        if (pending == null) {
+            summary.append("none\n");
+        } else {
+            summary.append("{type=").append(pending.type())
+                    .append(", status=").append(pending.status()).append("}\n");
+        }
+
+        PatientActionResponse last = state.lastActionResult();
+        summary.append("lastActionResult=");
+        if (last == null) {
+            summary.append("none");
+        } else {
+            summary.append("{type=").append(last.type())
+                    .append(", status=").append(last.status()).append('}');
+        }
+        return summary.toString();
     }
 
     private AgentState update(String conversationId, java.util.function.Consumer<AgentState> change) {
@@ -331,12 +369,6 @@ public class AgentStateService {
             if (removed.resultSetId().equals(state.currentResultSetId())) {
                 state.currentResultSetId(null);
             }
-        }
-    }
-
-    private void keepConfirmationOrSet(AgentState state, AgentPhase phase) {
-        if (state.pendingAction() == null) {
-            state.phase(phase);
         }
     }
 

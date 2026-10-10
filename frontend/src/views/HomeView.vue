@@ -6,9 +6,10 @@ import { logout as logoutRequest } from '../api/auth'
 import {
   confirmPatientAction,
   rejectPatientAction,
-  sendPatientMessage,
+  streamPatientMessage,
   type ChatCitation,
   type ChatTokenUsage,
+  type PatientChatResponse,
   type PatientActionResponse,
   type PatientActionStatus,
   type PendingPatientAction
@@ -31,6 +32,7 @@ type ChatMessage = {
   actionMessage?: string
   actionBusy?: boolean
   actionError?: string
+  streaming?: boolean
 }
 
 const router = useRouter()
@@ -40,6 +42,7 @@ const sending = ref(false)
 const input = ref('')
 const error = ref('')
 const chatViewport = ref<HTMLElement | null>(null)
+const composerInput = ref<HTMLTextAreaElement | null>(null)
 const MEMORY_MAX_MESSAGES = 40
 let nextMessageId = 1
 let conversationId = crypto.randomUUID()
@@ -64,6 +67,7 @@ onMounted(async () => {
     await leaveForLogin()
   } finally {
     checking.value = false
+    await focusComposer()
   }
 })
 
@@ -71,40 +75,59 @@ async function send(message?: string) {
   const content = (message ?? normalizedInput.value).trim()
   if (!content || content.length > 1000 || sending.value || checking.value) return
 
-  appendMemoryMessage({ id: nextMessageId++, role: 'user', content })
+  const userMessageId = nextMessageId++
+  appendMemoryMessage({ id: userMessageId, role: 'user', content })
+  const assistantMessageId = nextMessageId++
+  appendMemoryMessage({
+    id: assistantMessageId,
+    role: 'assistant',
+    content: '',
+    streaming: true
+  })
+  const assistantMessage = messages.value.find(message => message.id === assistantMessageId)!
   input.value = ''
   error.value = ''
   sending.value = true
   await scrollToBottom()
+  await focusComposer()
 
   try {
-    const result = await sendWithConversationRecovery(content)
+    const result = await sendWithConversationRecovery(
+      content,
+      userMessageId,
+      assistantMessageId,
+      delta => {
+        assistantMessage.content += delta
+        void scrollToBottom()
+      }
+    )
     const reusedPendingCard = reconcileActionState(result)
-    appendMemoryMessage({
-      id: nextMessageId++,
-      role: 'assistant',
-      content: result.answer,
-      citations: result.citations,
-      model: result.model,
-      usage: result.usage,
-      mode: result.mode,
-      tools: result.tools,
-      pendingAction: reusedPendingCard ? null : result.pendingAction,
-      actionStatus: result.pendingAction?.status
-    })
+    assistantMessage.content = result.answer
+    assistantMessage.citations = result.citations
+    assistantMessage.model = result.model
+    assistantMessage.usage = result.usage
+    assistantMessage.mode = result.mode
+    assistantMessage.tools = result.tools
+    assistantMessage.pendingAction = reusedPendingCard ? null : result.pendingAction
+    assistantMessage.actionStatus = result.pendingAction?.status
   } catch (cause) {
     if (cause instanceof ApiError && (cause.status === 401 || cause.status === 403)) {
       await leaveForLogin()
       return
     }
+    if (!assistantMessage.content) {
+      messages.value = messages.value.filter(message => message.id !== assistantMessageId)
+    }
     error.value = cause instanceof ApiError ? cause.message : '消息发送失败，请稍后重试'
   } finally {
+    assistantMessage.streaming = false
     sending.value = false
     await scrollToBottom()
+    await focusComposer()
   }
 }
 
-function reconcileActionState(result: Awaited<ReturnType<typeof sendPatientMessage>>) {
+function reconcileActionState(result: PatientChatResponse) {
   if (result.actionUpdate) {
     const existing = messages.value.find(message =>
       message.pendingAction?.actionId === result.actionUpdate?.actionId)
@@ -122,16 +145,23 @@ function reconcileActionState(result: Awaited<ReturnType<typeof sendPatientMessa
   return true
 }
 
-async function sendWithConversationRecovery(content: string) {
+async function sendWithConversationRecovery(
+  content: string,
+  userMessageId: number,
+  assistantMessageId: number,
+  onDelta: (content: string) => void
+) {
   try {
-    return await sendPatientMessage(session.token, conversationId, content)
+    return await streamPatientMessage(session.token, conversationId, content, onDelta)
   } catch (cause) {
     if (!(cause instanceof ApiError) || cause.code !== 40018) throw cause
 
     conversationId = crypto.randomUUID()
-    const currentUserMessage = messages.value.at(-1)
-    messages.value = currentUserMessage ? [currentUserMessage] : []
-    return sendPatientMessage(session.token, conversationId, content)
+    messages.value = messages.value.filter(message =>
+      message.id === userMessageId || message.id === assistantMessageId)
+    const assistant = messages.value.find(message => message.id === assistantMessageId)
+    if (assistant) assistant.content = ''
+    return streamPatientMessage(session.token, conversationId, content, onDelta)
   }
 }
 
@@ -168,6 +198,7 @@ async function decideAction(message: ChatMessage, decision: 'confirm' | 'reject'
   } finally {
     message.actionBusy = false
     await scrollToBottom()
+    await focusComposer()
   }
 }
 
@@ -197,17 +228,29 @@ function displayExpiry(value: string) {
   }).format(expiresAt)} 前确认`
 }
 
-function resetConversation() {
+async function resetConversation() {
   if (sending.value) return
   conversationId = crypto.randomUUID()
   messages.value = [createWelcomeMessage()]
   input.value = ''
   error.value = ''
+  await focusComposer()
 }
 
 async function scrollToBottom() {
   await nextTick()
   if (chatViewport.value) chatViewport.value.scrollTop = chatViewport.value.scrollHeight
+}
+
+async function focusComposer() {
+  await nextTick()
+  composerInput.value?.focus({ preventScroll: true })
+}
+
+function handleComposerEnter(event: KeyboardEvent) {
+  if (event.isComposing || sending.value) return
+  event.preventDefault()
+  void send()
 }
 
 function scoreText(score: number) {
@@ -267,7 +310,11 @@ async function leaveForLogin() {
           >
             <div class="message-avatar" aria-hidden="true">{{ message.role === 'assistant' ? 'AI' : '我' }}</div>
             <div class="message-column">
-              <div class="message-bubble">{{ message.content }}</div>
+              <div v-if="message.streaming && !message.content" class="message-bubble typing-bubble">
+                <span></span><span></span><span></span>
+                <em>正在判断问题并查询所需数据</em>
+              </div>
+              <div v-else class="message-bubble" :class="{ streaming: message.streaming }">{{ message.content }}</div>
 
               <div v-if="message.role === 'assistant' && message.citations?.length" class="message-sources">
                 <span class="source-heading">回答依据</span>
@@ -333,15 +380,6 @@ async function leaveForLogin() {
             </div>
           </article>
 
-          <article v-if="sending" class="chat-message chat-message-assistant">
-            <div class="message-avatar" aria-hidden="true">AI</div>
-            <div class="message-column">
-              <div class="message-bubble typing-bubble">
-                <span></span><span></span><span></span>
-                <em>正在判断问题并查询所需数据</em>
-              </div>
-            </div>
-          </article>
         </div>
 
         <div v-if="showSuggestions" class="patient-suggestions">
@@ -362,13 +400,14 @@ async function leaveForLogin() {
         <p v-if="error" class="chat-error" role="alert">{{ error }}</p>
         <form class="chat-composer" @submit.prevent="send()">
           <textarea
+            ref="composerInput"
             v-model="input"
             maxlength="1000"
             rows="1"
-            :disabled="sending || checking"
+            :disabled="checking"
             placeholder="查询科室、医生、号源、预约或候补，并办理需要确认的操作…"
             aria-label="聊天消息"
-            @keydown.enter.exact.prevent="send()"
+            @keydown.enter.exact="handleComposerEnter"
           ></textarea>
           <button type="submit" :disabled="!canSend || sending || checking" aria-label="发送消息">
             <span aria-hidden="true">↑</span>

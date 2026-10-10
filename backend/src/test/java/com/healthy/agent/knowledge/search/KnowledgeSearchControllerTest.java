@@ -44,9 +44,42 @@ class KnowledgeSearchControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"query\":\"如何取消预约\",\"limit\":5}"))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.strategy").value("VECTOR"))
                 .andExpect(jsonPath("$.data.embeddingModel").value("BAAI/bge-m3"))
                 .andExpect(jsonPath("$.data.results[0].fileName").value("预约制度.md"))
                 .andExpect(jsonPath("$.data.results[0].score").value(0.92));
+    }
+
+    @Test
+    void staffCanSelectBm25Search() throws Exception {
+        when(searchService.search(any())).thenReturn(new KnowledgeSearchResponse(
+                "电子票据", KnowledgeSearchStrategy.BM25, null, 3, List.of()
+        ));
+
+        mockMvc.perform(post("/api/agent/admin/knowledge/search")
+                        .header(GatewayIdentityInterceptor.USER_ID_HEADER, "12")
+                        .header(GatewayIdentityInterceptor.ROLE_HEADER, "STAFF")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"query\":\"电子票据\",\"limit\":3,\"strategy\":\"BM25\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.strategy").value("BM25"))
+                .andExpect(jsonPath("$.data.embeddingModel").doesNotExist());
+    }
+
+    @Test
+    void staffCanSelectHybridRrfSearch() throws Exception {
+        when(searchService.search(any())).thenReturn(new KnowledgeSearchResponse(
+                "预约退款", KnowledgeSearchStrategy.HYBRID, "BAAI/bge-m3", 5, List.of()
+        ));
+
+        mockMvc.perform(post("/api/agent/admin/knowledge/search")
+                        .header(GatewayIdentityInterceptor.USER_ID_HEADER, "12")
+                        .header(GatewayIdentityInterceptor.ROLE_HEADER, "STAFF")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"query\":\"预约退款\",\"limit\":5,\"strategy\":\"HYBRID\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.strategy").value("HYBRID"))
+                .andExpect(jsonPath("$.data.embeddingModel").value("BAAI/bge-m3"));
     }
 
     @Test

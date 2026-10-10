@@ -185,6 +185,23 @@ class PatientSpringAiToolsTest {
     }
 
     @Test
+    void everyPreparationToolDeclaresTerminalCardsCannotBeReused() {
+        when(registry.definitions()).thenReturn(List.of());
+        PatientSpringAiTools tools = tools();
+
+        for (String name : List.of(
+                PatientActionService.PREPARE_CREATE_APPOINTMENT,
+                PatientActionService.PREPARE_CANCEL_APPOINTMENT,
+                PatientActionService.PREPARE_JOIN_WAITLIST,
+                PatientActionService.PREPARE_CANCEL_WAITLIST,
+                PatientActionService.PREPARE_CONFIRM_WAITLIST)) {
+            assertThat(find(tools, name).getToolDefinition().description())
+                    .contains("旧确认卡永久不可再次确认")
+                    .contains("新 actionId", "不得让用户点击旧卡");
+        }
+    }
+
+    @Test
     void ragResultDoesNotCreateBusinessState() {
         when(registry.definitions()).thenReturn(List.of());
         KnowledgeRagResponse rag = new KnowledgeRagResponse(
