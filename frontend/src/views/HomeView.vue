@@ -5,14 +5,22 @@ import { getCurrentPatient } from '../api/agent'
 import { logout as logoutRequest } from '../api/auth'
 import {
   confirmPatientAction,
+  createPatientConversation,
+  deletePatientConversation,
+  listPatientConversations,
+  loadPatientConversationMessages,
+  renamePatientConversation,
   rejectPatientAction,
   streamPatientMessage,
   type ChatCitation,
   type ChatTokenUsage,
+  type AgentTrace,
   type PatientChatResponse,
   type PatientActionResponse,
   type PatientActionStatus,
-  type PendingPatientAction
+  type PendingPatientAction,
+  type ConversationSummary,
+  type ConversationHistoryMessage
 } from '../api/chat'
 import { ApiError } from '../api/http'
 import { session, signOut } from '../stores/session'
@@ -33,6 +41,8 @@ type ChatMessage = {
   actionBusy?: boolean
   actionError?: string
   streaming?: boolean
+  trace?: AgentTrace | null
+  actionTrace?: AgentTrace | null
 }
 
 const router = useRouter()
@@ -43,9 +53,14 @@ const input = ref('')
 const error = ref('')
 const chatViewport = ref<HTMLElement | null>(null)
 const composerInput = ref<HTMLTextAreaElement | null>(null)
-const MEMORY_MAX_MESSAGES = 40
+const conversations = ref<ConversationSummary[]>([])
+const loadingConversation = ref(false)
+const loadingOlder = ref(false)
+const historyBefore = ref<number | null>(null)
+const historyHasMore = ref(false)
+const sidebarOpen = ref(false)
 let nextMessageId = 1
-let conversationId = crypto.randomUUID()
+let conversationId = ''
 
 const createWelcomeMessage = (): ChatMessage => ({
   id: nextMessageId++,
@@ -56,7 +71,8 @@ const createWelcomeMessage = (): ChatMessage => ({
 
 const messages = ref<ChatMessage[]>([createWelcomeMessage()])
 const normalizedInput = computed(() => input.value.trim())
-const canSend = computed(() => normalizedInput.value.length > 0 && normalizedInput.value.length <= 1000)
+const canSend = computed(() => Boolean(conversationId)
+  && normalizedInput.value.length > 0 && normalizedInput.value.length <= 1000)
 const showSuggestions = computed(() => messages.value.length === 1 && !sending.value)
 
 onMounted(async () => {
@@ -65,6 +81,12 @@ onMounted(async () => {
     if (verified.role !== 'PATIENT' || verified.userId !== session.userId) throw new Error('role mismatch')
   } catch {
     await leaveForLogin()
+    return
+  }
+  try {
+    await initializeConversations()
+  } catch (cause) {
+    error.value = cause instanceof ApiError ? cause.message : '无法加载历史对话'
   } finally {
     checking.value = false
     await focusComposer()
@@ -94,10 +116,12 @@ async function send(message?: string) {
   try {
     const result = await sendWithConversationRecovery(
       content,
-      userMessageId,
-      assistantMessageId,
       delta => {
         assistantMessage.content += delta
+        void scrollToBottom()
+      },
+      trace => {
+        assistantMessage.trace = trace
         void scrollToBottom()
       }
     )
@@ -110,13 +134,17 @@ async function send(message?: string) {
     assistantMessage.tools = result.tools
     assistantMessage.pendingAction = reusedPendingCard ? null : result.pendingAction
     assistantMessage.actionStatus = result.pendingAction?.status
+    assistantMessage.trace = result.trace ?? assistantMessage.trace
+    void refreshConversationList()
   } catch (cause) {
     if (cause instanceof ApiError && (cause.status === 401 || cause.status === 403)) {
       await leaveForLogin()
       return
     }
-    if (!assistantMessage.content) {
+    if (!assistantMessage.content && !assistantMessage.trace) {
       messages.value = messages.value.filter(message => message.id !== assistantMessageId)
+    } else if (!assistantMessage.content) {
+      assistantMessage.content = '本次请求执行失败，请查看执行详情。'
     }
     error.value = cause instanceof ApiError ? cause.message : '消息发送失败，请稍后重试'
   } finally {
@@ -147,22 +175,10 @@ function reconcileActionState(result: PatientChatResponse) {
 
 async function sendWithConversationRecovery(
   content: string,
-  userMessageId: number,
-  assistantMessageId: number,
-  onDelta: (content: string) => void
+  onDelta: (content: string) => void,
+  onTrace: (trace: AgentTrace) => void
 ) {
-  try {
-    return await streamPatientMessage(session.token, conversationId, content, onDelta)
-  } catch (cause) {
-    if (!(cause instanceof ApiError) || cause.code !== 40018) throw cause
-
-    conversationId = crypto.randomUUID()
-    messages.value = messages.value.filter(message =>
-      message.id === userMessageId || message.id === assistantMessageId)
-    const assistant = messages.value.find(message => message.id === assistantMessageId)
-    if (assistant) assistant.content = ''
-    return streamPatientMessage(session.token, conversationId, content, onDelta)
-  }
+  return streamPatientMessage(session.token, conversationId, content, onDelta, onTrace)
 }
 
 function appendMemoryMessage(message: ChatMessage) {
@@ -170,9 +186,6 @@ function appendMemoryMessage(message: ChatMessage) {
     messages.value = []
   }
   messages.value.push(message)
-  if (messages.value.length > MEMORY_MAX_MESSAGES) {
-    messages.value.splice(0, messages.value.length - MEMORY_MAX_MESSAGES)
-  }
 }
 
 async function decideAction(message: ChatMessage, decision: 'confirm' | 'reject') {
@@ -186,6 +199,8 @@ async function decideAction(message: ChatMessage, decision: 'confirm' | 'reject'
       : await rejectPatientAction(session.token, conversationId, action.actionId)
     message.actionStatus = result.status
     message.actionMessage = result.message
+    message.actionTrace = result.trace
+    void refreshConversationList()
   } catch (cause) {
     if (cause instanceof ApiError && (cause.status === 401 || cause.status === 403)) {
       await leaveForLogin()
@@ -230,11 +245,143 @@ function displayExpiry(value: string) {
 
 async function resetConversation() {
   if (sending.value) return
-  conversationId = crypto.randomUUID()
-  messages.value = [createWelcomeMessage()]
-  input.value = ''
+  try {
+    const created = await createPatientConversation(session.token)
+    conversations.value = [created, ...conversations.value]
+    await selectConversation(created.conversationId)
+  } catch (cause) {
+    error.value = cause instanceof ApiError ? cause.message : '新建对话失败'
+  }
+}
+
+async function initializeConversations() {
+  conversations.value = await listPatientConversations(session.token)
+  if (!conversations.value.length) {
+    conversations.value = [await createPatientConversation(session.token)]
+  }
+  await selectConversation(conversations.value[0]!.conversationId)
+}
+
+async function refreshConversationList() {
+  try {
+    conversations.value = await listPatientConversations(session.token)
+  } catch {
+    // 列表刷新失败不影响当前已经完成的聊天。
+  }
+}
+
+async function selectConversation(id: string) {
+  if (sending.value || loadingConversation.value) return
+  loadingConversation.value = true
   error.value = ''
-  await focusComposer()
+  try {
+    const page = await loadPatientConversationMessages(session.token, id, null, 20)
+    conversationId = id
+    messages.value = page.messages.length
+      ? page.messages.map(fromHistoryMessage)
+      : [createWelcomeMessage()]
+    historyBefore.value = page.nextBeforeSequence
+    historyHasMore.value = page.hasMore
+    sidebarOpen.value = false
+    input.value = ''
+    await scrollToBottom()
+  } catch (cause) {
+    error.value = cause instanceof ApiError ? cause.message : '切换对话失败'
+  } finally {
+    loadingConversation.value = false
+    await focusComposer()
+  }
+}
+
+async function loadOlderMessages() {
+  if (!conversationId || !historyHasMore.value || loadingOlder.value) return
+  const viewport = chatViewport.value
+  const previousHeight = viewport?.scrollHeight ?? 0
+  loadingOlder.value = true
+  try {
+    const page = await loadPatientConversationMessages(
+      session.token, conversationId, historyBefore.value, 20)
+    const older = page.messages.map(fromHistoryMessage)
+    messages.value = [...older, ...messages.value]
+    historyBefore.value = page.nextBeforeSequence
+    historyHasMore.value = page.hasMore
+    await nextTick()
+    if (viewport) viewport.scrollTop += viewport.scrollHeight - previousHeight
+  } catch (cause) {
+    error.value = cause instanceof ApiError ? cause.message : '加载更早消息失败'
+  } finally {
+    loadingOlder.value = false
+  }
+}
+
+function fromHistoryMessage(stored: ConversationHistoryMessage): ChatMessage {
+  const response = stored.response
+  const pending = response?.pendingAction ?? null
+  let actionStatus = response?.actionUpdate?.status ?? pending?.status
+  if (actionStatus === 'PENDING' && pending && new Date(pending.expiresAt).getTime() <= Date.now()) {
+    actionStatus = 'EXPIRED'
+  }
+  return {
+    id: nextMessageId++,
+    role: stored.role === 'USER' ? 'user' : 'assistant',
+    content: response?.answer ?? stored.content,
+    citations: response?.citations,
+    model: response?.model,
+    usage: response?.usage,
+    mode: response?.mode,
+    tools: response?.tools,
+    pendingAction: pending,
+    actionStatus,
+    actionMessage: response?.actionUpdate?.message,
+    trace: null,
+    actionTrace: null
+  }
+}
+
+async function removeConversation(id: string) {
+  if (sending.value || loadingConversation.value) return
+  if (!window.confirm('删除后将无法恢复这段聊天记录，确定删除吗？')) return
+  try {
+    await deletePatientConversation(session.token, id)
+    conversations.value = conversations.value.filter(item => item.conversationId !== id)
+    if (conversationId === id) {
+      if (!conversations.value.length) {
+        conversations.value = [await createPatientConversation(session.token)]
+      }
+      await selectConversation(conversations.value[0]!.conversationId)
+    }
+  } catch (cause) {
+    error.value = cause instanceof ApiError ? cause.message : '删除对话失败'
+  }
+}
+
+async function renameConversation(conversation: ConversationSummary) {
+  if (sending.value || loadingConversation.value) return
+  const proposed = window.prompt('请输入新的对话名称（最多 60 个字符）', conversation.title)
+  if (proposed == null) return
+  const title = proposed.replace(/[\r\n]+/g, ' ').trim()
+  if (!title || Array.from(title).length > 60) {
+    error.value = '对话名称必须为 1 至 60 个字符'
+    return
+  }
+  if (title === conversation.title) return
+  try {
+    const updated = await renamePatientConversation(
+      session.token, conversation.conversationId, title)
+    conversations.value = conversations.value
+      .map(item => item.conversationId === updated.conversationId ? updated : item)
+      .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+  } catch (cause) {
+    error.value = cause instanceof ApiError ? cause.message : '修改对话名称失败'
+  }
+}
+
+function formatConversationTime(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false
+  }).format(date)
 }
 
 async function scrollToBottom() {
@@ -255,6 +402,42 @@ function handleComposerEnter(event: KeyboardEvent) {
 
 function scoreText(score: number) {
   return Number.isFinite(score) ? score.toFixed(4) : '0.0000'
+}
+
+function traceTypeLabel(type: string) {
+  switch (type) {
+    case 'ROUTING': return '意图路由'
+    case 'LLM': return 'LLM'
+    case 'TOOL': return 'Tool'
+    case 'RAG': return 'RAG'
+    case 'HITL': return '人工确认'
+    default: return type
+  }
+}
+
+function traceDetailText(details: Record<string, unknown>) {
+  const values: string[] = []
+  if (details.model) values.push(`模型 ${String(details.model)}`)
+  if (Array.isArray(details.routes)) values.push(`路由 ${details.routes.join(' + ')}`)
+  if (details.strategy) values.push(`方式 ${String(details.strategy)}`)
+  if (typeof details.totalTokens === 'number') values.push(`${details.totalTokens} Token`)
+  if (typeof details.chunkCount === 'number') values.push(`${details.chunkCount} 个 Chunk`)
+  if (typeof details.usedChunkCount === 'number') values.push(`使用 ${details.usedChunkCount} 个 Chunk`)
+  if (typeof details.resultCount === 'number') values.push(`${details.resultCount} 条结果`)
+  if (details.actionType) values.push(`操作 ${String(details.actionType)}`)
+  if (details.actionStatus) values.push(`状态 ${String(details.actionStatus)}`)
+  if (details.errorType) values.push(`错误 ${String(details.errorType)}`)
+  return values.join(' · ')
+}
+
+function traceChunks(details: Record<string, unknown>) {
+  if (!Array.isArray(details.chunks)) return []
+  return details.chunks.filter((chunk): chunk is Record<string, unknown> =>
+    typeof chunk === 'object' && chunk !== null)
+}
+
+function messageTraces(message: ChatMessage) {
+  return [message.trace, message.actionTrace].filter((trace): trace is AgentTrace => Boolean(trace))
 }
 
 async function logout() {
@@ -282,6 +465,11 @@ async function leaveForLogin() {
         <span>Healthy Agent</span>
       </div>
       <div class="patient-chat-actions">
+        <button
+          class="conversation-toggle"
+          :class="{ active: sidebarOpen }"
+          @click="sidebarOpen = !sidebarOpen"
+        >会话</button>
         <span class="patient-name">{{ session.name }}</span>
         <button class="new-chat-button" :disabled="sending" @click="resetConversation">新对话</button>
         <button class="logout-button" :disabled="loggingOut" @click="logout">
@@ -290,7 +478,57 @@ async function leaveForLogin() {
       </div>
     </header>
 
-    <section class="patient-chat-shell">
+    <div class="patient-chat-layout">
+      <aside class="conversation-sidebar" :class="{ open: sidebarOpen }">
+        <header>
+          <div>
+            <strong>历史对话</strong>
+            <small>{{ conversations.length }} 个会话</small>
+          </div>
+          <button :disabled="sending" aria-label="新建对话" @click="resetConversation">＋</button>
+        </header>
+        <div class="conversation-list">
+          <article
+            v-for="conversation in conversations"
+            :key="conversation.conversationId"
+            :class="{ active: conversation.conversationId === conversationId }"
+          >
+            <button
+              class="conversation-select"
+              :disabled="sending || loadingConversation"
+              :title="conversation.title"
+              @click="selectConversation(conversation.conversationId)"
+            >
+              <strong>{{ conversation.title }}</strong>
+              <small>{{ formatConversationTime(conversation.updatedAt) }}</small>
+            </button>
+            <div class="conversation-actions">
+              <button
+                class="conversation-rename"
+                :disabled="sending || loadingConversation"
+                aria-label="修改对话名称"
+                title="修改名称"
+                @click="renameConversation(conversation)"
+              >✎</button>
+              <button
+                class="conversation-delete"
+                :disabled="sending || loadingConversation"
+                aria-label="删除对话"
+                title="删除对话"
+                @click="removeConversation(conversation.conversationId)"
+              >×</button>
+            </div>
+          </article>
+        </div>
+      </aside>
+      <button
+        v-if="sidebarOpen"
+        class="conversation-backdrop"
+        aria-label="关闭会话列表"
+        @click="sidebarOpen = false"
+      ></button>
+
+      <section class="patient-chat-shell">
       <header class="chat-intro">
         <div>
           <span class="chat-status"><i></i>{{ checking ? '正在验证身份' : '预约助手在线' }}</span>
@@ -301,6 +539,12 @@ async function leaveForLogin() {
       </header>
 
       <div ref="chatViewport" class="chat-viewport" aria-live="polite">
+        <button
+          v-if="historyHasMore"
+          class="load-older-button"
+          :disabled="loadingOlder"
+          @click="loadOlderMessages"
+        >{{ loadingOlder ? '正在加载…' : '加载更早消息' }}</button>
         <div class="message-stream">
           <article
             v-for="message in messages"
@@ -377,6 +621,56 @@ async function leaveForLogin() {
               <div v-if="message.role === 'assistant' && message.tools?.length" class="message-tools">
                 <span v-for="tool in message.tools" :key="tool">{{ tool }}</span>
               </div>
+              <div
+                v-if="message.role === 'assistant' && messageTraces(message).length"
+                class="agent-trace-stack"
+              >
+                <details
+                  v-for="(trace, traceIndex) in messageTraces(message)"
+                  :key="trace.turnId"
+                  class="agent-trace"
+                >
+                  <summary>
+                    <span>{{ traceIndex === 0 ? '查看执行详情' : '查看确认操作详情' }}</span>
+                    <small>{{ trace.steps.length }} 个步骤 · {{ trace.totalDurationMs }}ms</small>
+                  </summary>
+                  <div class="agent-trace-body">
+                    <header>
+                      <span>Turn {{ trace.turnId.slice(0, 8) }}</span>
+                      <strong>总耗时 {{ trace.totalDurationMs }}ms</strong>
+                    </header>
+                    <ol>
+                      <li
+                        v-for="step in trace.steps"
+                        :key="`${trace.turnId}-${step.sequence}`"
+                        :class="`trace-${step.status.toLowerCase()}`"
+                      >
+                        <i aria-hidden="true"></i>
+                        <div>
+                          <header>
+                            <span>{{ traceTypeLabel(step.type) }}</span>
+                            <strong>{{ step.name }}</strong>
+                            <b>{{ step.status === 'SUCCESS' ? '成功' : '失败' }}</b>
+                            <em>{{ step.durationMs }}ms</em>
+                          </header>
+                          <p>{{ step.summary }}</p>
+                          <small v-if="traceDetailText(step.details)">
+                            {{ traceDetailText(step.details) }}
+                          </small>
+                          <ul v-if="traceChunks(step.details).length" class="trace-chunks">
+                            <li
+                              v-for="chunk in traceChunks(step.details)"
+                              :key="String(chunk.chunkId)"
+                            >
+                              {{ String(chunk.source) }} · {{ String(chunk.chunkId) }}
+                            </li>
+                          </ul>
+                        </div>
+                      </li>
+                    </ol>
+                  </div>
+                </details>
+              </div>
             </div>
           </article>
 
@@ -417,8 +711,9 @@ async function leaveForLogin() {
           <span>Enter 发送 · Shift + Enter 换行</span>
           <span>{{ normalizedInput.length }}/1000</span>
         </div>
-        <p class="medical-disclaimer">当前对话只使用最近约 20 轮上下文；点击“新对话”或服务重启后不再记忆旧内容。回答不能替代医生诊断；紧急情况请立即拨打 120。</p>
+        <p class="medical-disclaimer">完整聊天记录保存在 Redis；模型每次只读取当前对话最近 20 条消息。回答不能替代医生诊断；紧急情况请立即拨打 120。</p>
       </footer>
-    </section>
+      </section>
+    </div>
   </main>
 </template>

@@ -4,9 +4,11 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.healthy.agent.action.ActionPreparationResult;
 import com.healthy.agent.action.PatientActionService;
+import com.healthy.agent.action.PendingActionView;
 import com.healthy.agent.chat.PatientToolExecutionContext;
 import com.healthy.agent.common.AgentErrorCode;
 import com.healthy.agent.common.AgentException;
+import com.healthy.agent.knowledge.rag.KnowledgeQueryRewriteContext;
 import com.healthy.agent.knowledge.rag.KnowledgeRagRequest;
 import com.healthy.agent.knowledge.rag.KnowledgeRagResponse;
 import com.healthy.agent.knowledge.rag.KnowledgeRagService;
@@ -16,6 +18,8 @@ import com.healthy.agent.state.CandidateResultSet;
 import com.healthy.agent.state.CandidateSelectionResult;
 import com.healthy.agent.state.CandidateSelector;
 import com.healthy.agent.state.CandidateType;
+import com.healthy.agent.trace.AgentTraceStatus;
+import com.healthy.agent.trace.AgentTraceStepType;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
@@ -43,6 +47,7 @@ public class PatientSpringAiTools {
     private final PatientToolStateAdapter stateAdapter;
     private final PatientResultSetFactory resultSetFactory;
     private final ObjectMapper objectMapper;
+    private final PatientToolTraceInterceptor toolTraceInterceptor;
     private final List<ToolCallback> callbacks;
 
     public PatientSpringAiTools(
@@ -61,6 +66,7 @@ public class PatientSpringAiTools {
         this.stateAdapter = stateAdapter;
         this.resultSetFactory = resultSetFactory;
         this.objectMapper = objectMapper;
+        this.toolTraceInterceptor = new PatientToolTraceInterceptor(objectMapper);
         this.callbacks = buildCallbacks();
     }
 
@@ -94,7 +100,6 @@ public class PatientSpringAiTools {
                 false,
                 (input, toolContext) -> {
                     PatientToolExecutionContext context = state(toolContext);
-                    context.recordTool(name);
                     PatientToolStateAdapter.NormalizedToolInput normalized =
                             stateAdapter.normalize(name, input, context);
                     if (!normalized.ok()) {
@@ -136,7 +141,6 @@ public class PatientSpringAiTools {
                 false,
                 (input, toolContext) -> {
                     PatientToolExecutionContext context = state(toolContext);
-                    context.recordTool(SELECT_CANDIDATE);
                     CandidateSelector selector;
                     try {
                         selector = stateAdapter.selector(input);
@@ -161,7 +165,6 @@ public class PatientSpringAiTools {
                 true,
                 (input, toolContext) -> {
                     PatientToolExecutionContext context = state(toolContext);
-                    context.recordTool(PatientActionService.PREPARE_CREATE_APPOINTMENT);
                     if (!emptyObject(input)) return direct(context, "该工具不接受参数，请先通过 ResultSet 选择号源。");
                     Candidate candidate = stateService.selectedCandidate(
                             context.conversationId()).orElse(null);
@@ -187,7 +190,6 @@ public class PatientSpringAiTools {
                 true,
                 (input, toolContext) -> {
                     PatientToolExecutionContext context = state(toolContext);
-                    context.recordTool(PatientActionService.PREPARE_CANCEL_APPOINTMENT);
                     if (!emptyObject(input)) return direct(context, "该工具不接受参数，请先通过 ResultSet 选择预约。");
                     Candidate candidate = stateService.selectedCandidate(
                             context.conversationId()).orElse(null);
@@ -213,7 +215,6 @@ public class PatientSpringAiTools {
                 true,
                 (input, toolContext) -> {
                     PatientToolExecutionContext context = state(toolContext);
-                    context.recordTool(PatientActionService.PREPARE_JOIN_WAITLIST);
                     if (!emptyObject(input)) return direct(context,
                             "该工具不接受参数，请先通过 ResultSet 选择无余号班次。");
                     Candidate candidate = stateService.selectedCandidate(
@@ -241,7 +242,6 @@ public class PatientSpringAiTools {
                 true,
                 (input, toolContext) -> {
                     PatientToolExecutionContext context = state(toolContext);
-                    context.recordTool(PatientActionService.PREPARE_CANCEL_WAITLIST);
                     if (!emptyObject(input)) return direct(context,
                             "该工具不接受参数，请先通过 ResultSet 选择候补记录。");
                     Candidate candidate = stateService.selectedCandidate(
@@ -268,7 +268,6 @@ public class PatientSpringAiTools {
                 true,
                 (input, toolContext) -> {
                     PatientToolExecutionContext context = state(toolContext);
-                    context.recordTool(PatientActionService.PREPARE_CONFIRM_WAITLIST);
                     if (!emptyObject(input)) return direct(context,
                             "该工具不接受参数，请先通过 ResultSet 选择候补记录。");
                     Candidate candidate = stateService.selectedCandidate(
@@ -294,6 +293,12 @@ public class PatientSpringAiTools {
                     : preparation.failure().error().message());
         }
         context.pendingAction(preparation.pendingAction());
+        context.trace().instant(
+                AgentTraceStepType.HITL,
+                "创建待确认操作",
+                AgentTraceStatus.SUCCESS,
+                "已创建 " + preparation.pendingAction().type().name() + " 待确认操作",
+                Map.of("actionType", preparation.pendingAction().type().name()));
         return direct(context, actionService.confirmationMessage(preparation.pendingAction()));
     }
 
@@ -301,7 +306,7 @@ public class PatientSpringAiTools {
         Map<String, Object> schema = parameters(
                 Map.of("query", Map.of(
                         "type", "string", "minLength", 1, "maxLength", 1000,
-                        "description", "结合当前问题和最近对话补全后的知识库检索问题")),
+                        "description", "用户当前的知识库问题，保持原意且不要擅自增加条件；服务端会结合会话上下文统一改写检索句")),
                 List.of("query"));
         return callback(
                 RAG_TOOL,
@@ -312,8 +317,12 @@ public class PatientSpringAiTools {
                     PatientToolExecutionContext context = state(toolContext);
                     String query = requiredText(input, "query");
                     KnowledgeRagResponse rag = ragService.answer(
-                            new KnowledgeRagRequest(query, PATIENT_RAG_TOP_K));
-                    context.recordTool(RAG_TOOL);
+                            new KnowledgeRagRequest(query, PATIENT_RAG_TOP_K),
+                            context.trace(),
+                            new KnowledgeQueryRewriteContext(
+                                    context.question(),
+                                    context.conversationSummary(),
+                                    context.recentConversationMessages()));
                     context.ragResponse(rag);
                     context.directAnswer(rag.answer());
                     return rag.answer();
@@ -375,7 +384,9 @@ public class PatientSpringAiTools {
                 throw new IllegalStateException("Patient tools require a request ToolContext");
             }
             @Override public String call(String toolInput, ToolContext toolContext) {
-                return function.call(toolInput, toolContext);
+                PatientToolExecutionContext context = state(toolContext);
+                return toolTraceInterceptor.intercept(
+                        name, context, () -> function.call(toolInput, toolContext));
             }
         };
     }
@@ -450,4 +461,5 @@ public class PatientSpringAiTools {
     private interface ContextToolFunction {
         String call(String input, ToolContext context);
     }
+
 }

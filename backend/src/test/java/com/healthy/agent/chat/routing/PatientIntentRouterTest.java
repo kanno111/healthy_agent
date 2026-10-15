@@ -2,16 +2,15 @@ package com.healthy.agent.chat.routing;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.healthy.agent.config.LlmProperties;
+import com.healthy.agent.chat.history.PatientConversationHistoryService;
 import com.healthy.agent.state.AgentStateService;
 import com.healthy.agent.state.Candidate;
 import com.healthy.agent.state.CandidateType;
+import com.healthy.agent.trace.AgentTraceRecorder;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.chat.memory.InMemoryChatMemoryRepository;
-import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
@@ -27,6 +26,7 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verify;
@@ -39,16 +39,14 @@ class PatientIntentRouterTest {
     private final ChatClient.ChatClientRequestSpec request =
             mock(ChatClient.ChatClientRequestSpec.class);
     private final ChatClient.CallResponseSpec call = mock(ChatClient.CallResponseSpec.class);
-    private final ChatMemory chatMemory = MessageWindowChatMemory.builder()
-            .chatMemoryRepository(new InMemoryChatMemoryRepository())
-            .maxMessages(40)
-            .build();
+    private final PatientConversationHistoryService historyService =
+            mock(PatientConversationHistoryService.class);
     private final AgentStateService stateService = new AgentStateService();
     private final LlmProperties properties = new LlmProperties(
             "https://api.deepseek.com", "test-key", "deepseek-flash",
             2048, 0.1, Duration.ofSeconds(5), Duration.ofSeconds(30));
     private final PatientIntentRouter router = new PatientIntentRouter(
-            chatClient, chatMemory, stateService, properties, new ObjectMapper());
+            chatClient, historyService, stateService, properties, new ObjectMapper());
 
     @BeforeEach
     void setUp() {
@@ -57,6 +55,8 @@ class PatientIntentRouterTest {
         when(request.user(anyString())).thenReturn(request);
         when(request.options(any(ChatOptions.Builder.class))).thenReturn(request);
         when(request.call()).thenReturn(call);
+        when(historyService.recentModelMessages(anyString(), anyInt()))
+                .thenReturn(List.of());
     }
 
     @Test
@@ -65,19 +65,27 @@ class PatientIntentRouterTest {
                 "{\"routes\":[\"QUERY\",\"WRITE\"],\"uncertain\":false,"
                         + "\"reason\":\"先查号源，无号时加入候补\"}", 45, 15));
 
+        AgentTraceRecorder trace = AgentTraceRecorder.create();
         PatientIntentRoutingDecision result = router.route(
-                "帮我看下周一有没有号，没有号就加入候补", CONVERSATION);
+                "帮我看下周一有没有号，没有号就加入候补", CONVERSATION, trace);
+        trace.complete();
 
         assertThat(result.routes())
                 .isEqualTo(Set.of(PatientIntentRoute.QUERY, PatientIntentRoute.WRITE));
         assertThat(result.fallbackToAll()).isFalse();
         assertThat(result.usage().totalTokens()).isEqualTo(60);
+        assertThat(trace.snapshot().steps()).singleElement().satisfies(step -> {
+            assertThat(step.name()).isEqualTo("意图路由");
+            assertThat(step.details()).containsEntry("totalTokens", 60);
+            assertThat(step.summary()).contains("QUERY", "WRITE");
+        });
     }
 
     @Test
     void suppliesOnlyBoundedConversationAndIdFreeStateSummary() {
-        chatMemory.add(CONVERSATION, new UserMessage("下周有哪些医生有号？"));
-        chatMemory.add(CONVERSATION, new AssistantMessage("有张医生和李医生。"));
+        when(historyService.recentModelMessages(CONVERSATION, 6)).thenReturn(List.of(
+                new UserMessage("下周有哪些医生有号？"),
+                new AssistantMessage("有张医生和李医生。")));
         stateService.addResultSet(CONVERSATION, "下周有号医生", CandidateType.DOCTOR,
                 List.of(new Candidate(
                         987654L, CandidateType.DOCTOR, "李医生 神经内科",
@@ -87,12 +95,17 @@ class PatientIntentRouterTest {
                 "{\"routes\":[\"QUERY\"],\"uncertain\":false,"
                         + "\"reason\":\"引用既有医生列表\"}", 30, 10));
 
-        router.route("刚才第二个医生呢？", CONVERSATION);
+        router.route(
+                "刚才第二个医生呢？",
+                CONVERSATION,
+                "用户较早时明确希望下周复诊。",
+                AgentTraceRecorder.noop());
 
         ArgumentCaptor<String> input = ArgumentCaptor.forClass(String.class);
         verify(request).user(input.capture());
         assertThat(input.getValue())
-                .contains("刚才第二个医生呢", "下周有哪些医生有号", "下周有号医生", "type=DOCTOR")
+                .contains("刚才第二个医生呢", "下周有哪些医生有号", "下周有号医生",
+                        "type=DOCTOR", "用户较早时明确希望下周复诊")
                 .doesNotContain("987654", "rs_");
     }
 
@@ -115,11 +128,18 @@ class PatientIntentRouterTest {
     @Test
     void modelFailureDoesNotBlockMainAgentAndFallsBackToAll() {
         when(call.chatResponse()).thenThrow(new IllegalStateException("timeout"));
+        AgentTraceRecorder trace = AgentTraceRecorder.create();
 
-        PatientIntentRoutingDecision result = router.route("查询预约", CONVERSATION);
+        PatientIntentRoutingDecision result = router.route("查询预约", CONVERSATION, trace);
+        trace.complete();
 
         assertThat(result.routes()).containsExactly(PatientIntentRoute.ALL);
         assertThat(result.fallbackToAll()).isTrue();
+        assertThat(trace.snapshot().steps()).singleElement().satisfies(step -> {
+            assertThat(step.status().name()).isEqualTo("FAILED");
+            assertThat(step.summary()).contains("安全回退 ALL");
+            assertThat(step.details().toString()).doesNotContain("timeout");
+        });
     }
 
     private ChatResponse response(String text, int promptTokens, int completionTokens) {

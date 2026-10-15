@@ -85,6 +85,10 @@ services:
       AGENT_DB_NAME: ${AGENT_DB_NAME:-healthy_agent}
       AGENT_DB_USERNAME: ${AGENT_DB_USERNAME}
       AGENT_DB_PASSWORD: ${AGENT_DB_PASSWORD}
+      AGENT_REDIS_HOST: redis
+      AGENT_REDIS_PORT: 6379
+      AGENT_REDIS_DATABASE: ${AGENT_REDIS_DATABASE:-0}
+      AGENT_REDIS_PASSWORD: ${AGENT_REDIS_PASSWORD:-}
     ports:
       - "127.0.0.1:8091:8091"
     depends_on:
@@ -92,6 +96,8 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8091'"]
       interval: 10s
@@ -100,6 +106,23 @@ services:
       start_period: 30s
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks: [agent-network]
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: healthy-agent-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - agent_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
     networks: [agent-network]
 
   elasticsearch:
@@ -179,3 +202,4 @@ networks:
 volumes:
   agent_elasticsearch_data:
   minio_data:
+  agent_redis_data:

@@ -11,6 +11,10 @@ public final class PatientConversationIds {
     }
 
     public static String scoped(long userId, String rawConversationId) {
+        return "patient:" + userId + ":" + normalize(rawConversationId);
+    }
+
+    public static String normalize(String rawConversationId) {
         if (rawConversationId == null) {
             throw new AgentException(AgentErrorCode.INVALID_CONVERSATION_ID);
         }
@@ -23,6 +27,6 @@ public final class PatientConversationIds {
         } catch (IllegalArgumentException exception) {
             throw new AgentException(AgentErrorCode.INVALID_CONVERSATION_ID);
         }
-        return "patient:" + userId + ":" + normalized;
+        return normalized;
     }
 }

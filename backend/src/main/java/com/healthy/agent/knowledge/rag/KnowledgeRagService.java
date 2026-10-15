@@ -10,10 +10,14 @@ import com.healthy.agent.knowledge.search.KnowledgeSearchService;
 import com.healthy.agent.llm.ChatModelClient;
 import com.healthy.agent.llm.ChatModelResult;
 import com.healthy.agent.llm.TokenUsage;
+import com.healthy.agent.trace.AgentTraceRecorder;
+import com.healthy.agent.trace.AgentTraceStepType;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class KnowledgeRagService {
@@ -29,42 +33,125 @@ public class KnowledgeRagService {
             """;
 
     private final KnowledgeSearchService searchService;
+    private final KnowledgeQueryRewriteService queryRewriteService;
     private final ChatModelClient chatModelClient;
     private final RagProperties properties;
 
     public KnowledgeRagService(
             KnowledgeSearchService searchService,
+            KnowledgeQueryRewriteService queryRewriteService,
             ChatModelClient chatModelClient,
             RagProperties properties
     ) {
         this.searchService = searchService;
+        this.queryRewriteService = queryRewriteService;
         this.chatModelClient = chatModelClient;
         this.properties = properties;
     }
 
     public KnowledgeRagResponse answer(KnowledgeRagRequest request) {
-        String question = normalizeQuestion(request == null ? null : request.question());
-        int limit = normalizeLimit(request == null ? null : request.limit());
-        KnowledgeSearchResponse searchResponse = searchService.search(
-                new KnowledgeSearchRequest(question, limit));
+        return answer(request, AgentTraceRecorder.noop(), KnowledgeQueryRewriteContext.empty());
+    }
 
-        Context context = buildContext(searchResponse.results());
-        if (context.citations().isEmpty()) {
+    public KnowledgeRagResponse answer(
+            KnowledgeRagRequest request,
+            AgentTraceRecorder trace
+    ) {
+        return answer(request, trace, KnowledgeQueryRewriteContext.empty());
+    }
+
+    public KnowledgeRagResponse answer(
+            KnowledgeRagRequest request,
+            AgentTraceRecorder trace,
+            KnowledgeQueryRewriteContext rewriteContext
+    ) {
+        AgentTraceRecorder.StepHandle ragStep = trace.start(
+                AgentTraceStepType.RAG, "RAG 知识库问答");
+        try {
+            String question = normalizeQuestion(request == null ? null : request.question());
+            int limit = normalizeLimit(request == null ? null : request.limit());
+            KnowledgeQueryRewriteResult rewrite = queryRewriteService.rewrite(
+                    question, rewriteContext, trace);
+            KnowledgeSearchResponse searchResponse = searchService.search(
+                    new KnowledgeSearchRequest(rewrite.query(), limit), trace);
+
+            Context context = buildContext(searchResponse.results());
+            if (context.citations().isEmpty()) {
+                ragStep.success("未召回达到阈值的知识片段", Map.of(
+                        "strategy", searchResponse.strategy().name(),
+                        "queryRewritten", rewrite.changed(),
+                        "rewriteFallback", rewrite.fallback(),
+                        "recalledChunkCount", searchResponse.results().size(),
+                        "usedChunkCount", 0));
+                return new KnowledgeRagResponse(
+                        question, NO_ANSWER, chatModelClient.model(), searchResponse.embeddingModel(),
+                        List.of(), rewrite.usage());
+            }
+
+            String userPrompt = "参考资料：\n" + context.text() + "\n\n用户问题：\n" + question;
+            AgentTraceRecorder.StepHandle generationStep = trace.start(
+                    AgentTraceStepType.LLM, "RAG 答案生成");
+            ChatModelResult generation;
+            try {
+                generation = chatModelClient.generate(SYSTEM_PROMPT, userPrompt);
+                generationStep.success("RAG 答案生成成功", modelDetails(
+                        generation.model(), generation.usage()));
+            } catch (RuntimeException exception) {
+                generationStep.failure("RAG 答案生成失败", Map.of(
+                        "model", chatModelClient.model(),
+                        "errorType", exception.getClass().getSimpleName()));
+                throw exception;
+            }
+            ragStep.success(
+                    searchResponse.strategy().name() + " 检索召回 "
+                            + searchResponse.results().size() + " 个 Chunk，使用 "
+                            + context.citations().size() + " 个",
+                    ragDetails(searchResponse, context, rewrite));
             return new KnowledgeRagResponse(
-                    question, NO_ANSWER, chatModelClient.model(), searchResponse.embeddingModel(),
-                    List.of(), TokenUsage.empty());
+                    question,
+                    generation.answer(),
+                    generation.model(),
+                    searchResponse.embeddingModel(),
+                    context.citations(),
+                    rewrite.usage().plus(generation.usage())
+            );
+        } catch (RuntimeException exception) {
+            ragStep.failure("RAG 知识库问答失败", Map.of(
+                    "errorType", exception.getClass().getSimpleName()));
+            throw exception;
         }
+    }
 
-        String userPrompt = "参考资料：\n" + context.text() + "\n\n用户问题：\n" + question;
-        ChatModelResult generation = chatModelClient.generate(SYSTEM_PROMPT, userPrompt);
-        return new KnowledgeRagResponse(
-                question,
-                generation.answer(),
-                generation.model(),
-                searchResponse.embeddingModel(),
-                context.citations(),
-                generation.usage()
-        );
+    private Map<String, Object> ragDetails(
+            KnowledgeSearchResponse searchResponse,
+            Context context,
+            KnowledgeQueryRewriteResult rewrite
+    ) {
+        List<Map<String, Object>> chunks = context.citations().stream()
+                .map(citation -> {
+                    Map<String, Object> chunk = new LinkedHashMap<>();
+                    chunk.put("chunkId", citation.chunkId());
+                    chunk.put("source", citation.fileName());
+                    return Map.copyOf(chunk);
+                })
+                .toList();
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("strategy", searchResponse.strategy().name());
+        details.put("queryRewritten", rewrite.changed());
+        details.put("rewriteFallback", rewrite.fallback());
+        details.put("recalledChunkCount", searchResponse.results().size());
+        details.put("usedChunkCount", context.citations().size());
+        details.put("chunks", chunks);
+        return Map.copyOf(details);
+    }
+
+    private Map<String, Object> modelDetails(String model, TokenUsage usage) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("model", model);
+        details.put("promptTokens", usage.promptTokens());
+        details.put("completionTokens", usage.completionTokens());
+        details.put("totalTokens", usage.totalTokens());
+        return Map.copyOf(details);
     }
 
     private Context buildContext(List<KnowledgeSearchHit> hits) {

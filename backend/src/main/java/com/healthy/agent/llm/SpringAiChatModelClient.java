@@ -25,12 +25,31 @@ public class SpringAiChatModelClient implements ChatModelClient {
 
     @Override
     public ChatModelResult generate(String systemPrompt, String userPrompt) {
+        return generate(systemPrompt, userPrompt, properties.maxOutputTokens());
+    }
+
+    @Override
+    public ChatModelResult generate(
+            String systemPrompt,
+            String userPrompt,
+            int maxOutputTokens
+    ) {
+        return generate(systemPrompt, userPrompt, maxOutputTokens, properties.temperature());
+    }
+
+    @Override
+    public ChatModelResult generate(
+            String systemPrompt,
+            String userPrompt,
+            int maxOutputTokens,
+            double temperature
+    ) {
         requireApiKey();
         try {
             ChatResponse response = chatClient.prompt()
                     .system(systemPrompt)
                     .user(userPrompt)
-                    .options(options())
+                    .options(options(maxOutputTokens, temperature))
                     .call()
                     .chatResponse();
             if (response == null || response.getResult() == null
@@ -62,10 +81,14 @@ public class SpringAiChatModelClient implements ChatModelClient {
     }
 
     public OpenAiChatOptions.Builder options() {
+        return options(properties.maxOutputTokens(), properties.temperature());
+    }
+
+    private OpenAiChatOptions.Builder options(int maxOutputTokens, double temperature) {
         return OpenAiChatOptions.builder()
                 .model(properties.model())
-                .temperature(properties.temperature())
-                .maxTokens(properties.maxOutputTokens())
+                .temperature(temperature)
+                .maxTokens(Math.max(1, Math.min(maxOutputTokens, properties.maxOutputTokens())))
                 .parallelToolCalls(false)
                 .extraBody(Map.of("thinking", Map.of("type", "disabled")));
     }

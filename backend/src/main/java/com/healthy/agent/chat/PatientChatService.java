@@ -9,16 +9,22 @@ import com.healthy.agent.chat.routing.PatientIntentRoutingDecision;
 import com.healthy.agent.chat.routing.PatientIntentToolSelector;
 import com.healthy.agent.common.AgentErrorCode;
 import com.healthy.agent.common.AgentException;
+import com.healthy.agent.chat.history.PatientConversationHistoryService;
+import com.healthy.agent.chat.history.PatientConversationSummaryService;
+import com.healthy.agent.chat.history.ConversationMemoryContext;
 import com.healthy.agent.config.LlmProperties;
 import com.healthy.agent.knowledge.rag.KnowledgeRagResponse;
 import com.healthy.agent.llm.TokenUsage;
 import com.healthy.agent.state.AgentStateService;
 import com.healthy.agent.state.PatientConversationIds;
 import com.healthy.agent.tool.PatientSpringAiTools;
+import com.healthy.agent.trace.AgentTraceRecorder;
+import com.healthy.agent.trace.AgentTraceStatus;
+import com.healthy.agent.trace.AgentTraceStepType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.model.tool.ToolCallLimitExceededException;
@@ -56,6 +62,8 @@ public class PatientChatService {
     private final PatientIntentRouter intentRouter;
     private final PatientIntentToolSelector intentToolSelector;
     private final LlmProperties properties;
+    private final PatientConversationHistoryService historyService;
+    private final PatientConversationSummaryService summaryService;
 
     public PatientChatService(
             @Qualifier("patientChatClient") ChatClient chatClient,
@@ -64,7 +72,9 @@ public class PatientChatService {
             AgentStateService stateService,
             PatientIntentRouter intentRouter,
             PatientIntentToolSelector intentToolSelector,
-            LlmProperties properties
+            LlmProperties properties,
+            PatientConversationHistoryService historyService,
+            PatientConversationSummaryService summaryService
     ) {
         this.chatClient = chatClient;
         this.tools = tools;
@@ -73,6 +83,8 @@ public class PatientChatService {
         this.intentRouter = intentRouter;
         this.intentToolSelector = intentToolSelector;
         this.properties = properties;
+        this.historyService = historyService;
+        this.summaryService = summaryService;
     }
 
     public PatientChatResponse answer(
@@ -81,29 +93,50 @@ public class PatientChatService {
             long userId,
             String rawConversationId
     ) {
-        String question = normalizeQuestion(rawQuestion);
-        String conversationId = PatientConversationIds.scoped(userId, rawConversationId);
-        stateService.getOrCreate(conversationId);
-
-        PatientChatResponse controlResponse = controlResponse(
-                question, conversationId, userId);
-        if (controlResponse != null) return controlResponse;
-
-        PreparedModelInvocation invocation = prepareModelInvocation(
-                question, authorization, userId, conversationId);
-
-        ChatResponse response;
+        AgentTraceRecorder trace = AgentTraceRecorder.create();
         try {
-            response = invocation.request().call().chatResponse();
+            String question = normalizeQuestion(rawQuestion);
+            String normalizedConversationId = PatientConversationIds.normalize(rawConversationId);
+            String conversationId = historyService.requireOwned(
+                    userId, normalizedConversationId);
+            stateService.getOrCreate(conversationId);
+
+            PatientChatResponse controlResponse = controlResponse(
+                    question, conversationId, userId, trace);
+            if (controlResponse != null) {
+                PatientChatResponse completed = traced(controlResponse, trace);
+                persistExchange(userId, normalizedConversationId, question, completed);
+                return completed;
+            }
+
+            PreparedModelInvocation invocation = prepareModelInvocation(
+                    question, authorization, userId, conversationId, trace);
+            AgentTraceRecorder.StepHandle modelStep = trace.start(
+                    AgentTraceStepType.LLM, "Patient Agent 回答");
+            ChatResponse response;
+            try {
+                response = invocation.request().call().chatResponse();
+                modelStep.success("LLM 调用成功", modelDetails(model(response), usage(response)));
+            } catch (RuntimeException exception) {
+                modelStep.failure("LLM 调用失败", Map.of(
+                        "model", properties.model(),
+                        "errorType", exception.getClass().getSimpleName()));
+                throw exception;
+            }
+
+            PatientChatResponse completed = traced(completeResponse(
+                    invocation,
+                    responseText(response),
+                    model(response),
+                    invocation.memory().usage()
+                            .plus(invocation.routing().usage())
+                            .plus(usage(response))), trace);
+            persistExchange(userId, normalizedConversationId, question, completed);
+            return completed;
         } catch (RuntimeException exception) {
+            trace.complete();
             throw chatFailure(exception);
         }
-
-        return completeResponse(
-                invocation,
-                responseText(response),
-                model(response),
-                invocation.routing().usage().plus(usage(response)));
     }
 
     public Flux<PatientChatStreamEvent> stream(
@@ -113,23 +146,51 @@ public class PatientChatService {
             String rawConversationId
     ) {
         return Flux.defer(() -> {
+                    AgentTraceRecorder trace = AgentTraceRecorder.create();
+                    try {
+                        return streamRequest(
+                                rawQuestion, authorization, userId, rawConversationId, trace)
+                                .onErrorResume(exception -> failedStream(trace, exception));
+                    } catch (RuntimeException exception) {
+                        return failedStream(trace, exception);
+                    }
+                })
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    private Flux<PatientChatStreamEvent> streamRequest(
+            String rawQuestion,
+            String authorization,
+            long userId,
+            String rawConversationId,
+            AgentTraceRecorder trace
+    ) {
                     String question = normalizeQuestion(rawQuestion);
-                    String conversationId = PatientConversationIds.scoped(
-                            userId, rawConversationId);
+                    String normalizedConversationId = PatientConversationIds.normalize(
+                            rawConversationId);
+                    String conversationId = historyService.requireOwned(
+                            userId, normalizedConversationId);
                     stateService.getOrCreate(conversationId);
 
                     PatientChatResponse controlResponse = controlResponse(
-                            question, conversationId, userId);
+                            question, conversationId, userId, trace);
                     if (controlResponse != null) {
-                        return Flux.just(PatientChatStreamEvent.complete(controlResponse));
+                        PatientChatResponse completed = traced(controlResponse, trace);
+                        persistExchange(
+                                userId, normalizedConversationId, question, completed);
+                        return Flux.just(
+                                PatientChatStreamEvent.trace(completed.trace()),
+                                PatientChatStreamEvent.complete(completed.withoutTracePayload()));
                     }
 
                     PreparedModelInvocation invocation = prepareModelInvocation(
-                            question, authorization, userId, conversationId);
+                            question, authorization, userId, conversationId, trace);
                     StringBuilder streamedAnswer = new StringBuilder();
                     AtomicReference<String> responseModel = new AtomicReference<>(properties.model());
                     AtomicReference<TokenUsage> responseUsage = new AtomicReference<>(TokenUsage.empty());
                     AtomicBoolean visibleDeltaEmitted = new AtomicBoolean(false);
+                    AgentTraceRecorder.StepHandle modelStep = trace.start(
+                            AgentTraceStepType.LLM, "Patient Agent 回答");
                     boolean liveModelDeltas = !invocation.routing().fallbackToAll()
                             && invocation.routing().routes().equals(Set.of(PatientIntentRoute.CHAT));
 
@@ -146,55 +207,90 @@ public class PatientChatService {
                                 if (!liveModelDeltas || chunk.isEmpty()) return Mono.empty();
                                 visibleDeltaEmitted.set(true);
                                 return Mono.just(PatientChatStreamEvent.delta(chunk));
-                            });
+                            })
+                            .doOnError(exception -> modelStep.failure(
+                                    "LLM 流式调用失败", Map.of(
+                                            "model", responseModel.get(),
+                                            "errorType", exception.getClass().getSimpleName())));
 
                     Flux<PatientChatStreamEvent> completed = Flux.defer(() -> {
-                        PatientChatResponse response = completeResponse(
+                        modelStep.success("LLM 流式调用成功", modelDetails(
+                                responseModel.get(), responseUsage.get()));
+                        PatientChatResponse response = traced(completeResponse(
                                 invocation,
                                 streamedAnswer.toString(),
                                 responseModel.get(),
-                                invocation.routing().usage().plus(responseUsage.get()));
+                                invocation.memory().usage()
+                                        .plus(invocation.routing().usage())
+                                        .plus(responseUsage.get())), trace);
+                        persistExchange(
+                                userId, normalizedConversationId, question, response);
                         if (visibleDeltaEmitted.get()) {
-                            return Flux.just(PatientChatStreamEvent.complete(response));
+                            return Flux.just(
+                                    PatientChatStreamEvent.trace(response.trace()),
+                                    PatientChatStreamEvent.complete(response.withoutTracePayload()));
                         }
                         return Flux.just(
                                 PatientChatStreamEvent.delta(response.answer()),
-                                PatientChatStreamEvent.complete(response));
+                                PatientChatStreamEvent.trace(response.trace()),
+                                PatientChatStreamEvent.complete(response.withoutTracePayload()));
                     });
                     return deltas.concatWith(completed);
-                })
-                .onErrorResume(exception -> {
-                    AgentException failure = chatFailure(exception);
-                    return Flux.just(PatientChatStreamEvent.error(
-                            failure.errorCode().code(), failure.errorCode().message()));
-                })
-                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    private Flux<PatientChatStreamEvent> failedStream(
+            AgentTraceRecorder trace,
+            Throwable exception
+    ) {
+        trace.complete();
+        AgentException failure = chatFailure(exception);
+        return Flux.just(
+                PatientChatStreamEvent.trace(trace.snapshot()),
+                PatientChatStreamEvent.error(
+                        failure.errorCode().code(), failure.errorCode().message()));
+    }
+
+    private void persistExchange(
+            long userId,
+            String rawConversationId,
+            String question,
+            PatientChatResponse response
+    ) {
+        if (response.actionUpdate() != null) {
+            historyService.updateAction(userId, rawConversationId, response.actionUpdate());
+        }
+        historyService.appendExchange(userId, rawConversationId, question, response);
     }
 
     private PreparedModelInvocation prepareModelInvocation(
             String question,
             String authorization,
             long userId,
-            String conversationId
+            String conversationId,
+            AgentTraceRecorder trace
     ) {
         requireApiKey();
-        PatientIntentRoutingDecision routing = intentRouter.route(question, conversationId);
+        ConversationMemoryContext memory = summaryService.prepare(conversationId, trace);
+        PatientIntentRoutingDecision routing = intentRouter.route(
+                question, conversationId, memory.summary(), trace);
         List<ToolCallback> routedTools = intentToolSelector.select(tools.callbacks(), routing);
         log.info("Patient intent routed: routes={}, fallbackToAll={}, toolCount={}",
                 routing.routes(), routing.fallbackToAll(), routedTools.size());
         PatientToolExecutionContext context = new PatientToolExecutionContext(
-                question, authorization, userId, conversationId);
+                question, authorization, userId, conversationId, trace);
+        List<Message> recentMessages = historyService.recentModelMessages(
+                conversationId, memory.recentMessageLimit());
+        context.conversationMemory(memory.summary(), recentMessages);
 
         ChatClient.ChatClientRequestSpec request = chatClient.prompt()
                 .system(systemPrompt(conversationId))
+                .messages(memory.prependSummary(recentMessages))
                 .user(question);
         if (!routedTools.isEmpty()) request = request.tools(routedTools.toArray());
         request = request.toolContext(Map.of(
                         PatientToolExecutionContext.TOOL_CONTEXT_KEY, context))
-                .advisors(advisor -> advisor.param(
-                        ChatMemory.CONVERSATION_ID, conversationId))
                 .options(options());
-        return new PreparedModelInvocation(question, context, routing, request);
+        return new PreparedModelInvocation(question, context, routing, memory, request);
     }
 
     private PatientChatResponse completeResponse(
@@ -235,24 +331,43 @@ public class PatientChatService {
     private PatientChatResponse controlResponse(
             String question,
             String conversationId,
-            long userId
+            long userId,
+            AgentTraceRecorder trace
     ) {
         String control = normalizeControl(question);
         Optional<PendingActionView> active = actionService.activeAction(conversationId);
         if (ABANDON_WORDS.contains(control)) {
             if (active.isEmpty()) {
+                trace.instant(AgentTraceStepType.HITL, "拒绝待确认操作",
+                        AgentTraceStatus.SUCCESS, "当前没有待确认操作", Map.of());
                 return directResponse(question, "当前没有等待确认的操作。", null, null);
             }
-            PatientActionResponse rejected = actionService.reject(
-                    active.get().actionId(), conversationId, userId);
-            return directResponse(question, "已放弃本次操作。", null, rejected);
+            AgentTraceRecorder.StepHandle step = trace.start(
+                    AgentTraceStepType.HITL, "拒绝待确认操作");
+            try {
+                PatientActionResponse rejected = actionService.reject(
+                        active.get().actionId(), conversationId, userId);
+                step.success("用户已拒绝 " + rejected.type().name(), Map.of(
+                        "actionType", rejected.type().name(),
+                        "actionStatus", rejected.status().name()));
+                return directResponse(question, "已放弃本次操作。", null, rejected);
+            } catch (RuntimeException exception) {
+                step.failure("拒绝待确认操作失败", Map.of(
+                        "errorType", exception.getClass().getSimpleName()));
+                throw exception;
+            }
         }
         if (TEXT_CONFIRM_WORDS.contains(control)) {
             if (active.isEmpty()) {
+                trace.instant(AgentTraceStepType.HITL, "文字确认安全拦截",
+                        AgentTraceStatus.SUCCESS, "当前没有待确认操作", Map.of());
                 return directResponse(question,
                         "当前没有等待确认的操作。需要写入医院系统时，请先选择具体业务对象。",
                         null, null);
             }
+            trace.instant(AgentTraceStepType.HITL, "文字确认安全拦截",
+                    AgentTraceStatus.SUCCESS, "未执行写操作，要求点击确认卡片", Map.of(
+                            "actionType", active.get().type().name()));
             return directResponse(question,
                     "为避免误操作，文字“确认”不会执行。请点击原确认卡片中的确认按钮。",
                     active.get(), null);
@@ -313,6 +428,22 @@ public class PatientChatService {
                 List.of(),
                 pendingAction,
                 actionUpdate);
+    }
+
+    private PatientChatResponse traced(
+            PatientChatResponse response,
+            AgentTraceRecorder trace
+    ) {
+        trace.complete();
+        return response.withTrace(trace.snapshot());
+    }
+
+    private Map<String, Object> modelDetails(String model, TokenUsage usage) {
+        return Map.of(
+                "model", model,
+                "promptTokens", usage.promptTokens(),
+                "completionTokens", usage.completionTokens(),
+                "totalTokens", usage.totalTokens());
     }
 
     private String normalizeQuestion(String question) {
@@ -390,6 +521,7 @@ public class PatientChatService {
             String question,
             PatientToolExecutionContext context,
             PatientIntentRoutingDecision routing,
+            ConversationMemoryContext memory,
             ChatClient.ChatClientRequestSpec request
     ) { }
 }

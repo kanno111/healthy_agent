@@ -1,9 +1,11 @@
 package com.healthy.agent.action;
 
 import com.healthy.agent.common.GlobalExceptionHandler;
+import com.healthy.agent.chat.history.PatientConversationHistoryService;
 import com.healthy.agent.config.WebMvcConfig;
 import com.healthy.agent.security.GatewayIdentityInterceptor;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
@@ -29,6 +31,15 @@ class PatientActionControllerTest {
     @MockitoBean
     private PatientActionService actionService;
 
+    @MockitoBean
+    private PatientConversationHistoryService historyService;
+
+    @BeforeEach
+    void setUpConversation() {
+        when(historyService.requireOwned(8L, RAW_CONVERSATION))
+                .thenReturn(SCOPED_CONVERSATION);
+    }
+
     @Test
     void patientCanConfirmPreparedAction() throws Exception {
         when(actionService.confirm(
@@ -52,7 +63,10 @@ class PatientActionControllerTest {
                 .andExpect(jsonPath("$.data.status").value("SUCCEEDED"))
                 .andExpect(jsonPath("$.data.message").value("预约已成功取消"))
                 .andExpect(jsonPath("$.data.preview.title").value("确认取消预约"))
-                .andExpect(jsonPath("$.data.preview.fields[0].key").value("appointmentNo"));
+                .andExpect(jsonPath("$.data.preview.fields[0].key").value("appointmentNo"))
+                .andExpect(jsonPath("$.data.turnId").isNotEmpty())
+                .andExpect(jsonPath("$.data.trace.steps[0].type").value("HITL"))
+                .andExpect(jsonPath("$.data.trace.steps[0].status").value("SUCCESS"));
 
         verify(actionService).confirm(
                 "action-1", SCOPED_CONVERSATION, 8L, "Bearer cloud-token");

@@ -12,6 +12,7 @@ public enum AgentErrorCode {
     INVALID_RAG_QUESTION(40016, "请输入 1 至 1000 个字符的知识库问题", HttpStatus.BAD_REQUEST),
     INVALID_RAG_LIMIT(40017, "RAG 召回数量超出允许范围", HttpStatus.BAD_REQUEST),
     INVALID_CONVERSATION_ID(40018, "会话标识无效，请新建对话后重试", HttpStatus.BAD_REQUEST),
+    INVALID_CONVERSATION_TITLE(40019, "对话名称必须为 1 至 60 个字符", HttpStatus.BAD_REQUEST),
     ACTION_EXPIRED(40910, "该确认操作已过期，请重新发起", HttpStatus.CONFLICT),
     ACTION_STATE_CONFLICT(40911, "该操作已经处理，不能重复执行", HttpStatus.CONFLICT),
     TOOL_LOOP_LIMIT(42213, "工具调用次数过多，请简化问题后重试", HttpStatus.UNPROCESSABLE_CONTENT),
@@ -20,6 +21,7 @@ public enum AgentErrorCode {
     LOCAL_DEV_AUTH_DISABLED(40301, "本地开发登录未启用", HttpStatus.FORBIDDEN),
     DOCUMENT_NOT_FOUND(40410, "文档不存在或已被删除", HttpStatus.NOT_FOUND),
     ACTION_NOT_FOUND(40420, "确认操作不存在或已失效", HttpStatus.NOT_FOUND),
+    CONVERSATION_NOT_FOUND(40430, "对话不存在或无权访问", HttpStatus.NOT_FOUND),
     FILE_TOO_LARGE(41310, "单个文档不能超过 20 MiB", HttpStatus.CONTENT_TOO_LARGE),
     DOCUMENT_PARSE_FAILED(42210, "文档内容解析失败", HttpStatus.UNPROCESSABLE_CONTENT),
     DOCUMENT_TEXT_EMPTY(42211, "未提取到文本，扫描版 PDF 需要后续接入 OCR", HttpStatus.UNPROCESSABLE_CONTENT),
@@ -29,6 +31,7 @@ public enum AgentErrorCode {
     INDEX_UNAVAILABLE(50312, "文档索引服务暂时不可用", HttpStatus.SERVICE_UNAVAILABLE),
     EMBEDDING_UNAVAILABLE(50313, "文档向量化服务暂时不可用", HttpStatus.SERVICE_UNAVAILABLE),
     LLM_UNAVAILABLE(50314, "大模型问答服务暂时不可用", HttpStatus.SERVICE_UNAVAILABLE),
+    CHAT_HISTORY_UNAVAILABLE(50320, "聊天历史服务暂时不可用", HttpStatus.SERVICE_UNAVAILABLE),
     INTERNAL_ERROR(50000, "服务暂时不可用", HttpStatus.INTERNAL_SERVER_ERROR);
 
     private final int code;

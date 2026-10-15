@@ -229,6 +229,12 @@ public class PatientActionService {
         return stateService.getPendingAction(conversationId);
     }
 
+    public void discardConversation(long userId, String conversationId) {
+        synchronized (lockFor(conversationId)) {
+            store.discardConversation(userId, conversationId);
+        }
+    }
+
     public String confirmationMessage(PendingActionView view) {
         StringBuilder message = new StringBuilder(view.preview().description());
         for (ActionPreviewField field : view.preview().fields()) {

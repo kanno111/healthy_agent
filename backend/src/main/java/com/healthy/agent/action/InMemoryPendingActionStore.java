@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Component
 public class InMemoryPendingActionStore {
@@ -81,5 +82,24 @@ public class InMemoryPendingActionStore {
         });
         return Optional.ofNullable(updated.get())
                 .orElseThrow(() -> new AgentException(AgentErrorCode.INTERNAL_ERROR));
+    }
+
+    void discardConversation(long userId, String conversationId) {
+        AtomicBoolean executing = new AtomicBoolean(false);
+        actions.entrySet().removeIf(entry -> {
+            PendingPatientAction action = entry.getValue();
+            if (action.userId() != userId
+                    || !action.conversationId().equals(conversationId)) {
+                return false;
+            }
+            if (action.status() == PatientActionStatus.EXECUTING) {
+                executing.set(true);
+                return false;
+            }
+            return true;
+        });
+        if (executing.get()) {
+            throw new AgentException(AgentErrorCode.ACTION_STATE_CONFLICT);
+        }
     }
 }

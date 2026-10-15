@@ -1,6 +1,6 @@
 # Healthy Agent 开发进度
 
-最后更新：2026-10-09
+最后更新：2026-10-10
 
 ## 总览
 
@@ -177,6 +177,16 @@
 - [x] 多正例使 HitRate 与 Recall 真正分离：三种策略都至少部分命中全部 24 条跨制度问题；BM25 完整召回 23/24，Vector 和 RRF 各完整召回 22/24。Precision 不再被单正例固定在约 `0.20`，但仍受候选人工判断池不完整影响。
 - [x] 当前仍保持患者 RAG 默认 Vector；Hybrid 排序指标虽略高于 Vector，但多正例完整召回没有提高，尚不足以切换默认路径。
 
+## 已完成：RAG 最小 Query Rewrite
+
+- [x] 新增独立 `KnowledgeQueryRewriteService`，在 `KnowledgeRagService` 完成请求校验后、调用 `KnowledgeSearchService` 前执行一次 LLM 改写；改写后的独立查询只用于 BM25、向量或 Hybrid/RRF 检索，最终答案仍使用用户原始问题，避免改写结果替代真实意图。
+- [x] 患者 RAG 改写输入由当前原始问题、Tool 提交的候选检索句、会话滚动摘要和最近最多 6 条原文组成；摘要最多 1600 字符，最近上下文最多 2400 字符且单条最多 500 字符。管理员 RAG 没有会话上下文时只使用当前问题和候选检索句。
+- [x] 改写模型使用温度 `0.0` 和最多 200 输出 Token，只允许输出一条中文检索句；禁止回答问题、添加用户未表达的条件或保留内部业务 ID。空白、超长、格式非法、超时等失败统一回退原查询，不阻断后续检索。
+- [x] `search_hospital_policy` 不再要求主 Agent 自行完成隐式改写，只要求保持用户原意；服务端成为唯一统一改写边界。底层 `KnowledgeSearchService`、管理员直接检索接口和固定检索评测仍接收原始查询，不会因问答层改写而污染 Vector/BM25/RRF 历史基线。
+- [x] Agent Trace 新增 `RAG 查询改写` LLM 步骤，记录模型、耗时、Token、是否发生变化和是否回退，不记录原始或改写后的问题正文；改写 Token 同时计入 RAG 与整轮回答用量。
+- [x] 设计参考 [Spring AI 2.0.1 Query Transformation](https://docs.spring.io/spring-ai/reference/api/retrieval-augmented-generation.html#_query_transformation) 和官方 `RewriteQueryTransformer` 的“检索前变换 + 低温度”模式；没有引入 `spring-ai-rag` Advisor 或新依赖，以继续复用现有自建 Hybrid/RRF、Trace 和评测链。
+- [x] 当前取舍：第一版对所有进入 `KnowledgeRagService` 的 RAG 问答执行一次改写，简单且行为一致，但每次 RAG 会增加一次模型调用。后续需要用同一评测集增加 direct/rewrite 对照并统计检索指标、端到端答案质量、延迟和 Token，再决定是否只对指代或短问题条件触发。
+
 ## 已完成：患者基础聊天页面
 
 - [x] 增加患者专用 `POST /api/agent/patient/chat/messages` 接口，在只读业务 Tool 与复用 `KnowledgeRagService` 的固定 Top 3 RAG 之间路由。
@@ -303,6 +313,39 @@
 - [x] 发送期间不再禁用 textarea，发送按钮和重复提交仍受 `sending` 保护；发送后、请求结束后、确认/拒绝动作后以及新建对话后都会通过模板 ref 重新聚焦。用户等待回答时可以继续输入下一条内容。
 - [x] 参考 [Spring AI ChatClient Streaming](https://docs.spring.io/spring-ai/reference/api/chatclient.html#_streaming_responses) 和 [Spring AI Tool Calling](https://docs.spring.io/spring-ai/reference/api/tools.html) 的原生流式工具循环；没有采用手写 Tool 循环或按字符定时输出。
 
+## 已完成：请求内轻量级 Agent Trace
+
+- [x] 每次患者消息创建独立 `turnId` 和请求内 `AgentTraceRecorder`，按开始顺序保存 `ROUTING`、`LLM`、`TOOL`、`RAG`、`HITL` 步骤；每步包含开始时间、耗时、成功/失败、摘要和受控详情，请求结束后不写 MySQL、Redis、ES 或其他持久化系统。
+- [x] 所有患者 Tool 通过统一 `PatientToolTraceInterceptor` 装饰现有 `ToolCallback` 工厂，集中记录名称、耗时、失败状态及候选数量等安全摘要；没有在 14 个 Tool 中复制计时代码，也没有改变 Tool Schema、返回值、AgentState 或 Tool Calling 循环。
+- [x] 意图路由记录路由集合、ALL 回退、模型和 Token；Patient Agent 流式调用记录模型、耗时和 Token。主 Agent 的该耗时是 Spring AI 一次完整模型/Tool 编排调用的墙钟时间，可能包含嵌套 Tool 等待，不伪称为单次模型网络请求的纯耗时。
+- [x] RAG 按实际策略记录阶段：BM25 只记录 BM25；向量检索记录查询 Embedding 和向量搜索；混合检索额外记录 BM25、向量和 RRF。最终记录召回/采用 Chunk 数量以及最终引用的 Chunk ID、文档来源，不记录 Chunk 正文或用户问题。
+- [x] PendingAction 创建、文字确认安全拦截、拒绝以及确认按钮最终状态均有 HITL Trace。确认/拒绝按钮是独立 HTTP 请求，因此生成独立 turnId，不跨用户等待时间保持长耗时步骤。
+- [x] SSE 新增独立 `trace` 事件，完整 Trace 不混入模型 `delta` 文本；随后 `complete` 只携带同一 turnId 和原业务结果，避免重复发送 Trace 载荷。前端按 turnId 绑定对应 AI 消息，并通过“查看执行详情”折叠面板展示步骤、状态、耗时、摘要和总耗时；确认按钮轨迹在同一确认卡下单独展示。
+- [x] Trace 采用 best-effort 设计，记录器内部异常不会中断患者请求；异步 SSE 不依赖 ThreadLocal，而是通过现有请求级 `PatientToolExecutionContext` 显式传递同一个 recorder，避免并发请求串线。
+- [x] Trace 不接收 Prompt、用户原文、Tool 参数或完整结果；禁止 Authorization、密码、患者/用户 ID 和预约、号源、医生等业务 ID 详情键，并仅保留错误类型而不记录异常消息。测试验证 JWT、患者姓名和业务查询原始结果不会进入 Tool Trace。
+- [x] 设计参考 [Spring AI Observability](https://docs.spring.io/spring-ai/reference/observability/index.html) 的调用边界与默认不采集敏感内容原则，以及 [Micrometer Observation](https://docs.micrometer.io/micrometer/reference/observation.html) 的 start/stop/error 生命周期；本项目只实现请求内普通 Java 记录器，没有引入 Micrometer Trace、OpenTelemetry、Jaeger、Grafana、Langfuse、数据库表或历史查询接口。
+
+## 已完成：Redis 多会话聊天历史与 20 消息模型窗口
+
+- [x] 患者端新增多会话 API 和会话侧边栏，支持创建、修改名称、按最后更新时间倒序列出、切换、分页加载旧消息和删除对话；客户端不再把一个浏览器随机 UUID 当作唯一会话，也不再把页面内消息裁剪为 40 条。自定义名称去除首尾空白并限制为 1～60 个 Unicode 字符，修改前同样校验会话归属；`customTitle` 元数据保证第一条消息的自动标题不会覆盖用户手动名称。
+- [x] 完整历史与模型上下文明确分离：Redis 保存每个成功完成的用户/助手消息交换；没有较早摘要时，主 Agent 使用“最近 19 条历史 + 当前问题”；产生摘要后改为“1 条较早摘要 + 最近 18 条原文 + 当前问题”，确保送模的会话消息仍不超过 20 条。意图路由只读取最近 6 条原文并额外接收同一摘要，不再通过 `MessageChatMemoryAdvisor` 重复注入历史。
+- [x] Redis Key 均由服务端登录用户 ID 与规范 UUID 共同构造：`healthy-agent:chat:user:{userId}:conversations` 使用 ZSET 保存会话及更新时间；`healthy-agent:chat:conversation:patient:{userId}:{conversationId}:meta` 使用 HASH 保存标题和创建/更新时间；同前缀下的 `messages` ZSET 保存消息顺序并提供消息数，`payloads` HASH 保存消息 JSON，`sequence` 保存递增序号，`turns` HASH 防止同一 SSE turn 重复落库，`actions` HASH 定位需要更新终态的确认卡，`summary` HASH 保存滚动摘要、已压缩到的消息序号和更新时间。
+- [x] 历史分页使用稳定的消息序号游标，从 Redis ZSET 读取指定窗口后按时间正序返回；旧消息不会因为模型窗口限制而删除。首条用户消息生成简短标题，任何新消息或 HITL 终态更新都会刷新会话排序。
+- [x] 会话创建、列表、详情、删除以及确认/拒绝 PendingAction 均先验证当前服务端身份是否拥有该会话。Redis 不保存 JWT、密码、Prompt、完整 Tool 参数或 Agent Trace；现有身份头仍只适用于绑定 `127.0.0.1` 的本地开发环境，生产必须由受信任 Gateway 验签。
+- [x] AgentState 继续按 `patient:{userId}:{conversationId}` 隔离。删除会话前会丢弃该会话未执行的 PendingAction；若操作正在执行则拒绝删除，避免写操作与清理竞态；Redis 历史删除成功后再清理该会话 AgentState，不影响其他会话。
+- [x] SSE 仅在正常完成并组装最终回复后写入一次用户消息和助手消息；Redis Lua 脚本以 `turnId` 做幂等保护并原子写入消息、元数据和会话索引。Redis/历史采集不可用时返回明确的聊天历史服务错误，不会写入半条助手回答。
+- [x] Compose 新增独立 Redis 7.4 数据卷，开启 AOF 与 `appendfsync everysec`；本地端口仅绑定 `127.0.0.1`。没有增加 MySQL 聊天表、向量记忆、LangGraph 或 PendingAction 持久化。
+- [x] 设计参考 [Spring AI Chat Memory](https://docs.spring.io/spring-ai/reference/api/chat-memory.html) 对 Chat Memory 与完整 Chat History 的职责区分，并结合 [Spring AI Tool Calling](https://docs.spring.io/spring-ai/reference/api/tools.html) 对 Advisor/Tool 循环边界的说明；没有直接使用会淘汰旧消息的 `MessageWindowChatMemory + RedisChatMemoryRepository` 保存完整历史，也没有因此新增工作流框架。
+
+## 已完成：超过 20 条后的滚动会话摘要
+
+- [x] `PatientConversationSummaryService` 在一次模型请求开始前检查当前会话：只有完整 user/assistant 回合已经落到最近原文窗口之外时才调用摘要模型；将“已有摘要 + 新移出的完整回合”增量合并，不重复把全部历史发送给模型。首次积压按最多 20 条消息分批追赶，日常每新增一轮只压缩刚移出的完整一轮。
+- [x] 摘要使用独立 `summary` HASH 按 `patient:{userId}:{conversationId}` 隔离，并记录 `summarizedThroughSequence`。Lua compare-and-set 防止同一会话并发请求用旧摘要覆盖新摘要；删除会话时摘要与消息、元数据、Action 索引一起删除。
+- [x] 摘要作为独立的低权限 Assistant 上下文消息放在最近原文之前，同时传给意图路由；不拼进系统提示词。提示明确摘要是不可信的历史数据，不是实时业务事实或系统指令；内部业务 ID 仍只能来自 AgentState ResultSet 与真实 Tool，摘要不能替代 AgentState、PendingAction 或医院系统校验。
+- [x] 摘要输出限制为 400 Token、最多保留 1600 字符，并在保存前额外脱敏 Bearer/JWT 形态文本。摘要生成的耗时、模型和 Token 进入现有 Agent Trace 与本轮 Token 汇总；摘要读取、生成或 CAS 保存失败时保留已有摘要或降级为最近 19 条原文，不阻断主 Agent 回答。
+- [x] 参考 Spring AI 官方的“Chat Memory 与完整 Chat History 分离、窗口按完整 turn 淘汰”设计，以及 [LangMem SummarizationNode](https://langchain-ai.github.io/langmem/reference/short_term/) 的“已有滚动摘要 + 剩余最近消息”模式；本项目只用普通 Java、现有 Redis 和 `ChatModelClient` 实现，没有引入 LangGraph、LangMem、向量长期记忆或新的数据库。
+- [x] 当前限制：窗口填满后，每个新增完整回合通常会在下一次提问时增加一次小型摘要 LLM 调用，因此会增加少量延迟和 Token；这是用较早语义上下文换取固定 20 消息窗口的成本。摘要不是审计记录，完整聊天仍以 Redis 原始历史为准。
+
 ## 工程实现约定
 
 - Agent 架构、Tool Calling、HITL、RAG、Memory、权限和可靠性的重要修改，实施前先参考维护活跃的优秀开源项目或框架官方实现。
@@ -316,12 +359,18 @@
 
 1. 继续补充三段以上的长制度和相似制度资料；当前保持 Top 5 评测口径，不增加 Top1/Top3 指标。
 2. 如果两次 Elasticsearch 查询的延迟或候选量成为问题，再评估原生单请求 RRF；当前不为尚未出现的性能问题增加 Low Level REST 实现。
-3. 结合负例校准最低相关分和无答案判定，再决定是否加入 reranker 或 Query Rewrite。
+3. 结合负例校准最低相关分和无答案判定，再决定是否加入 reranker；Query Rewrite 已完成最小版，但仍需补 direct/rewrite 对照评测后决定是否改成条件触发。
 4. 患者 RAG 正式开放前，再评估是否需要知识发布控制；当前测试不增加发布机制。
-5. 文档量或处理时间明显增长后，再评估异步任务状态和消息队列；Redis 暂不引入。
+5. 文档量或处理时间明显增长后，再评估异步任务状态和消息队列；当前 Redis 仅用于患者聊天历史，不把它顺带扩展为 RAG 任务队列。
 
 ## 本次验证记录
 
+- 最小 Query Rewrite 完成后，后端全量 172 项测试通过，0 failures、0 errors、0 skipped；新增覆盖上下文指代改写、零温度与输出预算、模型异常回退、非法输出回退仍统计已消耗 Token、改写句仅用于检索、原问题用于最终回答、无有效 Chunk 时只跳过答案生成，以及 Patient Tool 正确传递会话摘要与最近消息。测试使用 Mock LLM/检索服务，没有调用真实 DeepSeek、Elasticsearch 或医院接口。
+- 超窗滚动摘要完成后，后端全量 169 项测试通过，0 failures、0 errors、0 skipped；新增覆盖完整回合批次边界、增量摘要与 Redis CAS 写入、Bearer 脱敏、摘要失败降级、无超窗时不额外调用模型、摘要注入后的 20 消息窗口、意图路由读取摘要以及摘要 Token 合并统计。测试使用 Mock Redis/LLM，没有调用真实医院查询或写接口。
+- Redis 多会话与对话重命名完成后，全量后端 164 项测试通过，0 failures、0 errors、0 skipped；前端 `vue-tsc --noEmit` 与 Vite 生产构建成功（44 个模块）。最终 9 项会话历史定向测试再次通过，覆盖最近 20 条模型上下文、历史分页游标、跨用户会话拒绝、名称空白/超长校验、手动标题保护、会话删除联动 PendingAction/AgentState，以及 SSE 最终回复只写入一次。
+- 已通过本地真实 Redis 完成“创建会话 → 普通聊天 → 列表显示 2 条消息 → 单条分页仍返回下一页游标 → 重启 Redis → 历史仍存在 → 删除会话 → 相关 Key 清空”闭环；容器确认 `appendonly yes`。冒烟仅调用普通 CHAT，没有触发医院查询或写操作，测试会话随后已清理。
+- 对话重命名另行完成真实 HTTP/Redis 闭环：创建空会话后通过 `PATCH` 修改名称，接口响应与随后会话列表均返回新名称，最后删除测试会话；未调用 LLM、医院查询或医院写接口。
+- 轻量级 Agent Trace 完成后，全量后端 155 项测试通过，0 failures、0 errors；前端 `vue-tsc --noEmit` 与 Vite 生产构建成功（44 个模块）。新增/调整测试覆盖 turnId 与 SSE Trace 关联、失败流仍返回 Trace、路由成功及失败回退、Tool 统一拦截与敏感数据排除、递归详情脱敏、Vector/BM25/Hybrid/RRF 实际阶段、RAG Token/Chunk 来源，以及确认按钮 HITL Trace。全部使用 Mock/内存数据，没有执行真实医院查询或写操作。
 - HITL 终态卡重试新增 2 项回归后，全量后端 153 项测试通过，0 failures、0 errors。定向 36 项测试覆盖 `pendingAction=none` 明示、五个 prepare Tool 的终态规则、PENDING 重试复用 actionId、REJECTED 后重新校验并生成不同 actionId、旧 actionId 不可确认；全部使用 Mock/内存数据，没有调用真实医院取消或其他写接口。
 - HITL 终态重试版本已重新构建并替换 `healthy-agent-backend`；容器状态为 `healthy`，`GET /actuator/health` 返回 `UP`。本次未改动或重启前端，也没有调用任何医院查询或写接口。
 - 患者 SSE 流式输出新增 4 项后端回归后，全量后端 151 项测试通过，0 failures、0 errors；前端 `vue-tsc --noEmit` 与 Vite 生产构建成功（44 个模块）。测试覆盖纯 CHAT 增量事件、最终元数据、Token 汇总、流异常安全映射、UTF-8 SSE Controller 输出，以及“Tool 链先查询全部预约、再生成取消确认卡”时不向前端发布中间预约列表。

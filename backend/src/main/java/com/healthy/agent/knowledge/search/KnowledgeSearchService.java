@@ -5,6 +5,8 @@ import com.healthy.agent.common.AgentException;
 import com.healthy.agent.knowledge.embedding.EmbeddingBatch;
 import com.healthy.agent.knowledge.embedding.EmbeddingClient;
 import com.healthy.agent.knowledge.index.KnowledgeChunkRepository;
+import com.healthy.agent.trace.AgentTraceRecorder;
+import com.healthy.agent.trace.AgentTraceStepType;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -36,31 +38,88 @@ public class KnowledgeSearchService {
     }
 
     public KnowledgeSearchResponse search(KnowledgeSearchRequest request) {
+        return search(request, AgentTraceRecorder.noop());
+    }
+
+    public KnowledgeSearchResponse search(
+            KnowledgeSearchRequest request,
+            AgentTraceRecorder trace
+    ) {
         String query = normalizeQuery(request == null ? null : request.query());
         int limit = normalizeLimit(request == null ? null : request.limit());
         KnowledgeSearchStrategy strategy = normalizeStrategy(request == null ? null : request.strategy());
 
         if (strategy == KnowledgeSearchStrategy.BM25) {
-            List<KnowledgeSearchHit> results = chunkRepository.searchBm25(query, limit);
+            List<KnowledgeSearchHit> results = tracedSearch(
+                    trace, "BM25 检索", "BM25", () -> chunkRepository.searchBm25(query, limit));
             return new KnowledgeSearchResponse(query, strategy, null, limit, results);
         }
 
-        EmbeddingBatch embeddingBatch = embedQuery(query);
+        AgentTraceRecorder.StepHandle embeddingStep = trace.start(
+                AgentTraceStepType.RAG, "生成查询向量");
+        EmbeddingBatch embeddingBatch;
+        try {
+            embeddingBatch = embedQuery(query);
+            embeddingStep.success("查询向量生成成功", Map.of(
+                    "embeddingModel", embeddingBatch.model(),
+                    "vectorCount", embeddingBatch.vectors().size()));
+        } catch (RuntimeException exception) {
+            embeddingStep.failure("查询向量生成失败", Map.of(
+                    "errorType", exception.getClass().getSimpleName()));
+            throw exception;
+        }
         List<Float> queryVector = embeddingBatch.vectors().getFirst();
         if (strategy == KnowledgeSearchStrategy.HYBRID) {
-            List<KnowledgeSearchHit> bm25Results = chunkRepository.searchBm25(
-                    query, RRF_WINDOW_SIZE);
-            List<KnowledgeSearchHit> vectorResults = chunkRepository.searchVector(
-                    queryVector, RRF_WINDOW_SIZE);
-            List<KnowledgeSearchHit> results = reciprocalRankFusion(
-                    bm25Results, vectorResults, limit);
+            List<KnowledgeSearchHit> bm25Results = tracedSearch(
+                    trace, "BM25 检索", "BM25",
+                    () -> chunkRepository.searchBm25(query, RRF_WINDOW_SIZE));
+            List<KnowledgeSearchHit> vectorResults = tracedSearch(
+                    trace, "向量检索", "VECTOR",
+                    () -> chunkRepository.searchVector(queryVector, RRF_WINDOW_SIZE));
+            AgentTraceRecorder.StepHandle fusionStep = trace.start(
+                    AgentTraceStepType.RAG, "RRF 融合");
+            List<KnowledgeSearchHit> results;
+            try {
+                results = reciprocalRankFusion(bm25Results, vectorResults, limit);
+                fusionStep.success("融合后召回 " + results.size() + " 个 Chunk", Map.of(
+                        "strategy", "HYBRID",
+                        "bm25Count", bm25Results.size(),
+                        "vectorCount", vectorResults.size(),
+                        "chunkCount", results.size()));
+            } catch (RuntimeException exception) {
+                fusionStep.failure("RRF 融合失败", Map.of(
+                        "errorType", exception.getClass().getSimpleName()));
+                throw exception;
+            }
             return new KnowledgeSearchResponse(
                     query, strategy, embeddingBatch.model(), limit, results);
         }
 
-        List<KnowledgeSearchHit> results = chunkRepository.searchVector(queryVector, limit);
+        List<KnowledgeSearchHit> results = tracedSearch(
+                trace, "向量检索", "VECTOR",
+                () -> chunkRepository.searchVector(queryVector, limit));
         return new KnowledgeSearchResponse(
                 query, strategy, embeddingBatch.model(), limit, results);
+    }
+
+    private List<KnowledgeSearchHit> tracedSearch(
+            AgentTraceRecorder trace,
+            String name,
+            String strategy,
+            SearchOperation operation
+    ) {
+        AgentTraceRecorder.StepHandle step = trace.start(AgentTraceStepType.RAG, name);
+        try {
+            List<KnowledgeSearchHit> results = operation.search();
+            step.success("召回 " + results.size() + " 个 Chunk", Map.of(
+                    "strategy", strategy, "chunkCount", results.size()));
+            return results;
+        } catch (RuntimeException exception) {
+            step.failure(name + "失败", Map.of(
+                    "strategy", strategy,
+                    "errorType", exception.getClass().getSimpleName()));
+            throw exception;
+        }
     }
 
     private EmbeddingBatch embedQuery(String query) {
@@ -148,5 +207,10 @@ public class KnowledgeSearchService {
 
     private KnowledgeSearchStrategy normalizeStrategy(KnowledgeSearchStrategy strategy) {
         return strategy == null ? KnowledgeSearchStrategy.VECTOR : strategy;
+    }
+
+    @FunctionalInterface
+    private interface SearchOperation {
+        List<KnowledgeSearchHit> search();
     }
 }

@@ -17,6 +17,27 @@ export type ChatTokenUsage = {
   totalTokens: number
 }
 
+export type AgentTraceStepType = 'ROUTING' | 'LLM' | 'TOOL' | 'RAG' | 'HITL'
+export type AgentTraceStatus = 'SUCCESS' | 'FAILED'
+
+export type AgentTraceStep = {
+  sequence: number
+  type: AgentTraceStepType
+  name: string
+  startedAt: string
+  durationMs: number
+  status: AgentTraceStatus
+  summary: string
+  details: Record<string, unknown>
+}
+
+export type AgentTrace = {
+  turnId: string
+  startedAt: string
+  totalDurationMs: number
+  steps: AgentTraceStep[]
+}
+
 export type PatientActionStatus =
   | 'PENDING'
   | 'EXECUTING'
@@ -60,6 +81,8 @@ export type PatientActionResponse = {
   status: PatientActionStatus
   message: string
   preview: PatientActionPreview
+  turnId: string | null
+  trace: AgentTrace | null
 }
 
 export type PatientChatResponse = {
@@ -73,14 +96,90 @@ export type PatientChatResponse = {
   tools: string[]
   pendingAction: PendingPatientAction | null
   actionUpdate: PatientActionResponse | null
+  turnId: string | null
+  trace: AgentTrace | null
+}
+
+export type ConversationSummary = {
+  conversationId: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  messageCount: number
+}
+
+export type ConversationHistoryMessage = {
+  sequence: number
+  messageId: string
+  role: 'USER' | 'ASSISTANT'
+  content: string
+  createdAt: string
+  response: PatientChatResponse | null
+}
+
+export type ConversationMessagePage = {
+  messages: ConversationHistoryMessage[]
+  nextBeforeSequence: number | null
+  hasMore: boolean
 }
 
 type PatientChatStreamEvent = {
-  type: 'delta' | 'complete' | 'error'
+  type: 'delta' | 'trace' | 'complete' | 'error'
   content: string | null
   response: PatientChatResponse | null
   code: number | null
   message: string | null
+  turnId: string | null
+  trace: AgentTrace | null
+}
+
+export function listPatientConversations(token: string) {
+  return fetch('/api/agent/patient/conversations', {
+    headers: agentRequestHeaders(token)
+  }).then(response => readApiResponse<ConversationSummary[]>(response, '无法加载历史对话'))
+}
+
+export function createPatientConversation(token: string) {
+  return fetch('/api/agent/patient/conversations', {
+    method: 'POST',
+    headers: agentRequestHeaders(token)
+  }).then(response => readApiResponse<ConversationSummary>(response, '新建对话失败'))
+}
+
+export function renamePatientConversation(
+  token: string,
+  conversationId: string,
+  title: string
+) {
+  return fetch(`/api/agent/patient/conversations/${encodeURIComponent(conversationId)}`, {
+    method: 'PATCH',
+    headers: {
+      ...agentRequestHeaders(token),
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ title })
+  }).then(response => readApiResponse<ConversationSummary>(response, '修改对话名称失败'))
+}
+
+export function loadPatientConversationMessages(
+  token: string,
+  conversationId: string,
+  before?: number | null,
+  size = 20
+) {
+  const params = new URLSearchParams({ size: String(size) })
+  if (before != null) params.set('before', String(before))
+  return fetch(`/api/agent/patient/conversations/${encodeURIComponent(conversationId)}/messages?${params}`, {
+    headers: agentRequestHeaders(token)
+  }).then(response => readApiResponse<ConversationMessagePage>(response, '无法加载聊天记录'))
+}
+
+export async function deletePatientConversation(token: string, conversationId: string) {
+  const response = await fetch(
+    `/api/agent/patient/conversations/${encodeURIComponent(conversationId)}`,
+    { method: 'DELETE', headers: agentRequestHeaders(token) }
+  )
+  return readApiResponse<void>(response, '删除对话失败')
 }
 
 async function sendActionDecision(
@@ -138,7 +237,8 @@ export async function streamPatientMessage(
   token: string,
   conversationId: string,
   message: string,
-  onDelta: (content: string) => void
+  onDelta: (content: string) => void,
+  onTrace: (trace: AgentTrace) => void
 ): Promise<PatientChatResponse> {
   let response: Response
   try {
@@ -180,6 +280,8 @@ export async function streamPatientMessage(
     }
     if (event.type === 'delta' && event.content) {
       onDelta(event.content)
+    } else if (event.type === 'trace' && event.trace) {
+      onTrace(event.trace)
     } else if (event.type === 'complete' && event.response) {
       completed = event.response
     } else if (event.type === 'error') {

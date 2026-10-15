@@ -13,17 +13,22 @@ import com.healthy.agent.chat.routing.PatientIntentRouter;
 import com.healthy.agent.chat.routing.PatientIntentRoute;
 import com.healthy.agent.chat.routing.PatientIntentRoutingDecision;
 import com.healthy.agent.chat.routing.PatientIntentToolSelector;
+import com.healthy.agent.chat.history.PatientConversationHistoryService;
+import com.healthy.agent.chat.history.PatientConversationSummaryService;
+import com.healthy.agent.chat.history.ConversationMemoryContext;
 import com.healthy.agent.llm.TokenUsage;
 import com.healthy.agent.state.AgentStateService;
 import com.healthy.agent.state.Candidate;
 import com.healthy.agent.state.CandidateResultSet;
 import com.healthy.agent.state.CandidateType;
 import com.healthy.agent.tool.PatientSpringAiTools;
+import com.healthy.agent.trace.AgentTraceRecorder;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
 import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -49,7 +54,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -71,18 +79,24 @@ class PatientChatServiceTest {
     private final LlmProperties properties = new LlmProperties(
             "https://api.deepseek.com", "test-key", "deepseek-flash",
             2048, 0.1, Duration.ofSeconds(5), Duration.ofSeconds(30));
+    private final PatientConversationHistoryService historyService =
+            mock(PatientConversationHistoryService.class);
+    private final PatientConversationSummaryService summaryService =
+            mock(PatientConversationSummaryService.class);
     private final PatientChatService service = new PatientChatService(
             chatClient, tools, actionService, stateService,
-            intentRouter, intentToolSelector, properties);
+            intentRouter, intentToolSelector, properties, historyService, summaryService);
 
     @BeforeEach
     @SuppressWarnings({"unchecked", "rawtypes"})
     void setUpChatClient() {
-        when(intentRouter.route(anyString(), anyString())).thenReturn(
+        when(intentRouter.route(anyString(), anyString(), anyString(),
+                any(AgentTraceRecorder.class))).thenReturn(
                 PatientIntentRoutingDecision.fallback("test fallback", null));
         when(tools.callbacks()).thenReturn(List.of());
         when(chatClient.prompt()).thenReturn(request);
         when(request.system(anyString())).thenReturn(request);
+        when(request.messages(anyList())).thenReturn(request);
         when(request.user(anyString())).thenReturn(request);
         when(request.tools(any(Object[].class))).thenReturn(request);
         when(request.toolContext(anyMap())).thenReturn(request);
@@ -90,6 +104,11 @@ class PatientChatServiceTest {
         when(request.options(any(ChatOptions.Builder.class))).thenReturn(request);
         when(request.call()).thenReturn(call);
         when(request.stream()).thenReturn(streamCall);
+        when(historyService.requireOwned(8L, CONVERSATION_ID)).thenReturn(SCOPED);
+        when(historyService.recentModelMessages(anyString(), anyInt()))
+                .thenReturn(List.of());
+        when(summaryService.prepare(anyString(), any(AgentTraceRecorder.class)))
+                .thenReturn(ConversationMemoryContext.empty());
     }
 
     @Test
@@ -103,6 +122,12 @@ class PatientChatServiceTest {
 
         assertThat(result.answer()).isEqualTo("你目前没有预约记录。");
         assertThat(result.usage().totalTokens()).isEqualTo(120);
+        assertThat(result.turnId()).isNotBlank();
+        assertThat(result.trace().turnId()).isEqualTo(result.turnId());
+        assertThat(result.trace().steps())
+                .extracting(step -> step.name())
+                .contains("Patient Agent 回答");
+        assertThat(result.trace().toString()).doesNotContain("very-secret-jwt");
         ArgumentCaptor<String> system = ArgumentCaptor.forClass(String.class);
         verify(request).system(system.capture());
         assertThat(system.getValue()).contains("recentResultSets").doesNotContain("very-secret-jwt");
@@ -114,6 +139,9 @@ class PatientChatServiceTest {
                 .get(PatientToolExecutionContext.TOOL_CONTEXT_KEY);
         assertThat(state.authorization()).isEqualTo("Bearer very-secret-jwt");
         assertThat(state.conversationId()).isEqualTo(SCOPED);
+        verify(historyService).recentModelMessages(SCOPED, 19);
+        verify(historyService).appendExchange(
+                8L, CONVERSATION_ID, "查询我的预约", result);
     }
 
     @Test
@@ -144,7 +172,8 @@ class PatientChatServiceTest {
     @Test
     void chatRouteRegistersNoToolsAndCountsRouterTokens() {
         when(actionService.activeAction(SCOPED)).thenReturn(Optional.empty());
-        when(intentRouter.route(anyString(), anyString())).thenReturn(
+        when(intentRouter.route(anyString(), anyString(), anyString(),
+                any(AgentTraceRecorder.class))).thenReturn(
                 PatientIntentRoutingDecision.routed(
                         Set.of(PatientIntentRoute.CHAT), "普通聊天",
                         new TokenUsage(8, 4, 12)));
@@ -160,9 +189,54 @@ class PatientChatServiceTest {
     }
 
     @Test
+    void prependsRollingSummaryWithoutExpandingTwentyMessageWindow() {
+        when(actionService.activeAction(SCOPED)).thenReturn(Optional.empty());
+        ConversationMemoryContext memory = new ConversationMemoryContext(
+                "用户此前想看神经内科，下周继续筛选医生。",
+                2L,
+                new TokenUsage(30, 10, 40));
+        when(summaryService.prepare(eq(SCOPED), any(AgentTraceRecorder.class)))
+                .thenReturn(memory);
+        when(intentRouter.route(anyString(), eq(SCOPED), eq(memory.summary()),
+                any(AgentTraceRecorder.class))).thenReturn(
+                PatientIntentRoutingDecision.routed(
+                        Set.of(PatientIntentRoute.CHAT), "测试摘要上下文",
+                        new TokenUsage(8, 4, 12)));
+        when(historyService.recentModelMessages(SCOPED, 18))
+                .thenReturn(List.of(new AssistantMessage("最近一条原文")));
+        when(call.chatResponse()).thenReturn(response(
+                "继续为你查询。", "deepseek-flash", 100, 20));
+
+        PatientChatResponse result = service.answer(
+                "那下周呢？", "Bearer token", 8L, CONVERSATION_ID);
+
+        assertThat(result.usage().totalTokens()).isEqualTo(172);
+        verify(historyService).recentModelMessages(SCOPED, 18);
+        @SuppressWarnings("rawtypes")
+        ArgumentCaptor<List> messages = ArgumentCaptor.forClass(List.class);
+        verify(request).messages(messages.capture());
+        @SuppressWarnings("unchecked")
+        List<Message> promptMessages = (List<Message>) messages.getValue();
+        assertThat(promptMessages).hasSize(2);
+        assertThat(promptMessages.getFirst().getText())
+                .contains("较早对话摘要", "神经内科", "不得据此恢复或猜测任何内部业务 ID");
+        assertThat(promptMessages.getLast().getText()).isEqualTo("最近一条原文");
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> toolContext = ArgumentCaptor.forClass(Map.class);
+        verify(request).toolContext(toolContext.capture());
+        PatientToolExecutionContext executionContext = (PatientToolExecutionContext)
+                toolContext.getValue().get(PatientToolExecutionContext.TOOL_CONTEXT_KEY);
+        assertThat(executionContext.conversationSummary()).isEqualTo(memory.summary());
+        assertThat(executionContext.recentConversationMessages())
+                .singleElement().extracting(Message::getText).isEqualTo("最近一条原文");
+    }
+
+    @Test
     void queryRouteRegistersOnlyQueryGroupCallbacks() {
         when(actionService.activeAction(SCOPED)).thenReturn(Optional.empty());
-        when(intentRouter.route(anyString(), anyString())).thenReturn(
+        when(intentRouter.route(anyString(), anyString(), anyString(),
+                any(AgentTraceRecorder.class))).thenReturn(
                 PatientIntentRoutingDecision.routed(
                         Set.of(PatientIntentRoute.QUERY), "业务查询", TokenUsage.empty()));
         when(tools.callbacks()).thenReturn(List.of(
@@ -184,7 +258,8 @@ class PatientChatServiceTest {
     @Test
     void streamsChatDeltasAndCompletesWithAggregatedMetadata() {
         when(actionService.activeAction(SCOPED)).thenReturn(Optional.empty());
-        when(intentRouter.route(anyString(), anyString())).thenReturn(
+        when(intentRouter.route(anyString(), anyString(), anyString(),
+                any(AgentTraceRecorder.class))).thenReturn(
                 PatientIntentRoutingDecision.routed(
                         Set.of(PatientIntentRoute.CHAT), "普通聊天",
                         new TokenUsage(8, 4, 12)));
@@ -196,23 +271,35 @@ class PatientChatServiceTest {
                         "你好", "Bearer token", 8L, CONVERSATION_ID)
                 .collectList().block();
 
-        assertThat(events).isNotNull().hasSize(3);
+        assertThat(events).isNotNull().hasSize(4);
         assertThat(events.subList(0, 2))
                 .extracting(PatientChatStreamEvent::type, PatientChatStreamEvent::content)
                 .containsExactly(
                         org.assertj.core.groups.Tuple.tuple("delta", "你"),
                         org.assertj.core.groups.Tuple.tuple("delta", "好"));
+        assertThat(events.get(2).type()).isEqualTo("trace");
+        assertThat(events.get(2).trace().steps())
+                .extracting(step -> step.type().name())
+                .contains("LLM");
         PatientChatResponse completed = events.getLast().response();
         assertThat(events.getLast().type()).isEqualTo("complete");
+        assertThat(completed.turnId()).isEqualTo(events.get(2).turnId());
+        assertThat(completed.trace()).isNull();
         assertThat(completed.answer()).isEqualTo("你好");
         assertThat(completed.usage().totalTokens()).isEqualTo(132);
         verify(request).stream();
+        verify(historyService).appendExchange(
+                org.mockito.ArgumentMatchers.eq(8L),
+                org.mockito.ArgumentMatchers.eq(CONVERSATION_ID),
+                org.mockito.ArgumentMatchers.eq("你好"),
+                any(PatientChatResponse.class));
     }
 
     @Test
     void toolChainPublishesOnlyFinalConfirmationInsteadOfIntermediateAppointmentList() {
         when(actionService.activeAction(SCOPED)).thenReturn(Optional.empty());
-        when(intentRouter.route(anyString(), anyString())).thenReturn(
+        when(intentRouter.route(anyString(), anyString(), anyString(),
+                any(AgentTraceRecorder.class))).thenReturn(
                 PatientIntentRoutingDecision.routed(
                         Set.of(PatientIntentRoute.WRITE), "取消预约", TokenUsage.empty()));
         PendingActionView pending = pending();
@@ -241,11 +328,12 @@ class PatientChatServiceTest {
                         "取消刚才确定的预约", "Bearer token", 8L, CONVERSATION_ID)
                 .collectList().block();
 
-        assertThat(events).isNotNull().hasSize(2);
+        assertThat(events).isNotNull().hasSize(3);
         assertThat(events.getFirst().type()).isEqualTo("delta");
         assertThat(events.getFirst().content()).isEqualTo(confirmation);
         assertThat(events).noneMatch(event -> event.content() != null
                 && event.content().contains("您当前有以下预约"));
+        assertThat(events.get(1).type()).isEqualTo("trace");
         assertThat(events.getLast().type()).isEqualTo("complete");
         assertThat(events.getLast().response().answer()).isEqualTo(confirmation);
         assertThat(events.getLast().response().pendingAction()).isEqualTo(pending);
@@ -261,7 +349,10 @@ class PatientChatServiceTest {
                         "你好", "Bearer token", 8L, CONVERSATION_ID)
                 .collectList().block();
 
-        assertThat(events).singleElement().satisfies(event -> {
+        assertThat(events).hasSize(2);
+        assertThat(events.getFirst().type()).isEqualTo("trace");
+        assertThat(events.getFirst().trace().turnId()).isNotBlank();
+        assertThat(events.getLast()).satisfies(event -> {
             assertThat(event.type()).isEqualTo("error");
             assertThat(event.code()).isEqualTo(50314);
             assertThat(event.message()).isEqualTo("大模型问答服务暂时不可用");

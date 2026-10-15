@@ -36,6 +36,10 @@ public class AgentStateService {
         return update(conversationId, ignored -> { });
     }
 
+    public void clearConversation(String conversationId) {
+        if (conversationId != null) states.remove(conversationId);
+    }
+
     public CandidateResultSet addResultSet(
             String conversationId,
             String description,

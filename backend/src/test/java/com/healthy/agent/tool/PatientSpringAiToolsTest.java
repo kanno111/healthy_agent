@@ -12,11 +12,15 @@ import com.healthy.agent.chat.PatientToolExecutionContext;
 import com.healthy.agent.knowledge.rag.KnowledgeRagRequest;
 import com.healthy.agent.knowledge.rag.KnowledgeRagResponse;
 import com.healthy.agent.knowledge.rag.KnowledgeRagService;
+import com.healthy.agent.knowledge.rag.KnowledgeQueryRewriteContext;
 import com.healthy.agent.llm.TokenUsage;
 import com.healthy.agent.state.AgentStateService;
 import com.healthy.agent.state.Candidate;
 import com.healthy.agent.state.CandidateType;
+import com.healthy.agent.trace.AgentTraceRecorder;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 
@@ -60,6 +64,30 @@ class PatientSpringAiToolsTest {
         assertThat(stateService.getCurrentResultSet(CONVERSATION)).isPresent()
                 .get().extracting(result -> result.type()).isEqualTo(CandidateType.APPOINTMENT);
         assertThat(context.directAnswer()).contains("1. [有效预约]");
+    }
+
+    @Test
+    void toolCallbackInterceptorRecordsSafeSummaryWithoutArgumentsOrJwt() {
+        when(registry.definitions()).thenReturn(List.of(definition("list_my_appointments")));
+        var appointments = objectMapper.createArrayNode().add(objectMapper.createObjectNode()
+                .put("id", 201L).put("doctorName", "敏感姓名")
+                .put("scheduleDate", "2026-10-12").put("status", "BOOKED"));
+        when(registry.execute("list_my_appointments", "{}", "Bearer secret-token", 8L))
+                .thenReturn(ToolExecutionResult.success(appointments));
+        AgentTraceRecorder trace = AgentTraceRecorder.create();
+        PatientToolExecutionContext context = new PatientToolExecutionContext(
+                "查询我的预约", "Bearer secret-token", 8L, CONVERSATION, trace);
+
+        find(tools(), "list_my_appointments").call("{}", context(context));
+        trace.complete();
+
+        assertThat(trace.snapshot().steps()).singleElement().satisfies(step -> {
+            assertThat(step.type().name()).isEqualTo("TOOL");
+            assertThat(step.name()).isEqualTo("list_my_appointments");
+            assertThat(step.summary()).contains("1 个 APPOINTMENT 候选项");
+        });
+        assertThat(trace.snapshot().toString())
+                .doesNotContain("secret-token", "Bearer", "敏感姓名", "201");
     }
 
     @Test
@@ -207,14 +235,34 @@ class PatientSpringAiToolsTest {
         KnowledgeRagResponse rag = new KnowledgeRagResponse(
                 "门诊如何退费", "请按原支付渠道办理。[资料1]", "deepseek-flash",
                 "BAAI/bge-m3", List.of(), new TokenUsage(50, 10, 60));
-        when(ragService.answer(new KnowledgeRagRequest("门诊如何退费", 3))).thenReturn(rag);
+        when(ragService.answer(
+                org.mockito.ArgumentMatchers.eq(
+                        new KnowledgeRagRequest("门诊如何退费", 3)),
+                org.mockito.ArgumentMatchers.any(AgentTraceRecorder.class),
+                org.mockito.ArgumentMatchers.any(KnowledgeQueryRewriteContext.class)))
+                .thenReturn(rag);
         PatientSpringAiTools tools = tools();
+        PatientToolExecutionContext toolContext = contextState();
+        toolContext.conversationMemory(
+                "用户此前询问门诊退费。",
+                List.of(new AssistantMessage("可继续询问办理流程。")));
 
         String output = find(tools, PatientSpringAiTools.RAG_TOOL)
-                .call("{\"query\":\"门诊如何退费\"}", context(contextState()));
+                .call("{\"query\":\"门诊如何退费\"}", context(toolContext));
 
         assertThat(output).isEqualTo(rag.answer());
         assertThat(stateService.getCurrentResultSet(CONVERSATION)).isEmpty();
+        ArgumentCaptor<KnowledgeQueryRewriteContext> rewriteContext =
+                ArgumentCaptor.forClass(KnowledgeQueryRewriteContext.class);
+        verify(ragService).answer(
+                org.mockito.ArgumentMatchers.eq(new KnowledgeRagRequest("门诊如何退费", 3)),
+                org.mockito.ArgumentMatchers.any(AgentTraceRecorder.class),
+                rewriteContext.capture());
+        assertThat(rewriteContext.getValue().currentQuestion()).isEqualTo("原始问题");
+        assertThat(rewriteContext.getValue().conversationSummary()).contains("门诊退费");
+        assertThat(rewriteContext.getValue().recentMessages())
+                .singleElement().extracting(message -> message.getText())
+                .isEqualTo("可继续询问办理流程。");
     }
 
     private PatientSpringAiTools tools() {

@@ -5,6 +5,7 @@ import com.healthy.agent.common.AgentException;
 import com.healthy.agent.knowledge.embedding.EmbeddingBatch;
 import com.healthy.agent.knowledge.embedding.EmbeddingClient;
 import com.healthy.agent.knowledge.index.KnowledgeChunkRepository;
+import com.healthy.agent.trace.AgentTraceRecorder;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -95,8 +96,10 @@ class KnowledgeSearchServiceTest {
         when(chunkRepository.searchVector(vector, 50))
                 .thenReturn(List.of(b, c, d, a));
 
+        AgentTraceRecorder trace = AgentTraceRecorder.create();
         KnowledgeSearchResponse response = service.search(new KnowledgeSearchRequest(
-                "预约退款多久到账", 3, KnowledgeSearchStrategy.HYBRID));
+                "预约退款多久到账", 3, KnowledgeSearchStrategy.HYBRID), trace);
+        trace.complete();
 
         assertThat(response.strategy()).isEqualTo(KnowledgeSearchStrategy.HYBRID);
         assertThat(response.embeddingModel()).isEqualTo("BAAI/bge-m3");
@@ -108,6 +111,9 @@ class KnowledgeSearchServiceTest {
                 1.0d / 62.0d + 1.0d / 61.0d, within(0.0000001d));
         verify(chunkRepository).searchBm25("预约退款多久到账", 50);
         verify(chunkRepository).searchVector(vector, 50);
+        assertThat(trace.snapshot().steps())
+                .extracting(step -> step.name())
+                .containsExactly("生成查询向量", "BM25 检索", "向量检索", "RRF 融合");
     }
 
     @Test
