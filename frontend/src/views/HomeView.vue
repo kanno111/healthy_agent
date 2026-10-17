@@ -6,12 +6,15 @@ import { logout as logoutRequest } from '../api/auth'
 import {
   confirmPatientAction,
   createPatientConversation,
+  deletePatientProfile,
   deletePatientConversation,
+  getPatientProfile,
   listPatientConversations,
   loadPatientConversationMessages,
   renamePatientConversation,
   rejectPatientAction,
   streamPatientMessage,
+  updatePatientProfile,
   type ChatCitation,
   type ChatTokenUsage,
   type AgentTrace,
@@ -20,7 +23,13 @@ import {
   type PatientActionStatus,
   type PendingPatientAction,
   type ConversationSummary,
-  type ConversationHistoryMessage
+  type ConversationHistoryMessage,
+  type AppointmentPeriod,
+  type ResponseStyle,
+  type PatientProfile,
+  type Sex,
+  type SmokingStatus,
+  type AlcoholStatus
 } from '../api/chat'
 import { ApiError } from '../api/http'
 import { session, signOut } from '../stores/session'
@@ -59,6 +68,21 @@ const loadingOlder = ref(false)
 const historyBefore = ref<number | null>(null)
 const historyHasMore = ref(false)
 const sidebarOpen = ref(false)
+const profileOpen = ref(false)
+const profileLoading = ref(false)
+const profileSaving = ref(false)
+const profileError = ref('')
+const appointmentPeriod = ref<AppointmentPeriod>('NO_PREFERENCE')
+const responseStyle = ref<ResponseStyle>('DEFAULT')
+const age = ref('')
+const sex = ref<Sex>('UNKNOWN')
+const heightCm = ref('')
+const weightKg = ref('')
+const conditions = ref('')
+const allergies = ref('')
+const medications = ref('')
+const smokingStatus = ref<SmokingStatus>('UNKNOWN')
+const alcoholStatus = ref<AlcoholStatus>('UNKNOWN')
 let nextMessageId = 1
 let conversationId = ''
 
@@ -440,6 +464,110 @@ function messageTraces(message: ChatMessage) {
   return [message.trace, message.actionTrace].filter((trace): trace is AgentTrace => Boolean(trace))
 }
 
+async function openProfile() {
+  if (profileLoading.value || profileSaving.value) return
+  profileOpen.value = true
+  profileLoading.value = true
+  profileError.value = ''
+  try {
+    const profile = await getPatientProfile(session.token)
+    assignProfile(profile)
+  } catch (cause) {
+    profileError.value = cause instanceof ApiError ? cause.message : '无法加载用户画像'
+  } finally {
+    profileLoading.value = false
+  }
+}
+
+function closeProfile() {
+  if (!profileSaving.value) profileOpen.value = false
+}
+
+async function saveProfile() {
+  if (profileSaving.value || profileLoading.value) return
+  profileSaving.value = true
+  profileError.value = ''
+  try {
+    const profile = await updatePatientProfile(session.token, {
+      appointmentPeriod: appointmentPeriod.value,
+      responseStyle: responseStyle.value,
+      age: optionalNumber(age.value),
+      sex: sex.value,
+      heightCm: optionalNumber(heightCm.value),
+      weightKg: optionalNumber(weightKg.value),
+      conditions: parseProfileList(conditions.value),
+      allergies: parseProfileList(allergies.value),
+      medications: parseProfileList(medications.value),
+      smokingStatus: smokingStatus.value,
+      alcoholStatus: alcoholStatus.value
+    })
+    assignProfile(profile)
+    profileOpen.value = false
+  } catch (cause) {
+    profileError.value = cause instanceof ApiError ? cause.message : '保存用户画像失败'
+  } finally {
+    profileSaving.value = false
+  }
+}
+
+async function clearProfile() {
+  if (profileSaving.value || profileLoading.value) return
+  if (!window.confirm('确定清除全部用户画像，包括健康信息和偏好吗？')) return
+  profileSaving.value = true
+  profileError.value = ''
+  try {
+    await deletePatientProfile(session.token)
+    assignProfile(emptyProfile())
+    profileOpen.value = false
+  } catch (cause) {
+    profileError.value = cause instanceof ApiError ? cause.message : '清除用户画像失败'
+  } finally {
+    profileSaving.value = false
+  }
+}
+
+function assignProfile(profile: PatientProfile) {
+  appointmentPeriod.value = profile.appointmentPeriod
+  responseStyle.value = profile.responseStyle
+  age.value = profile.age == null ? '' : String(profile.age)
+  sex.value = profile.sex
+  heightCm.value = profile.heightCm == null ? '' : String(profile.heightCm)
+  weightKg.value = profile.weightKg == null ? '' : String(profile.weightKg)
+  conditions.value = profile.conditions.join('\n')
+  allergies.value = profile.allergies.join('\n')
+  medications.value = profile.medications.join('\n')
+  smokingStatus.value = profile.smokingStatus
+  alcoholStatus.value = profile.alcoholStatus
+}
+
+function emptyProfile(): PatientProfile {
+  return {
+    appointmentPeriod: 'NO_PREFERENCE',
+    responseStyle: 'DEFAULT',
+    age: null,
+    sex: 'UNKNOWN',
+    heightCm: null,
+    weightKg: null,
+    conditions: [],
+    allergies: [],
+    medications: [],
+    smokingStatus: 'UNKNOWN',
+    alcoholStatus: 'UNKNOWN',
+    updatedAt: null
+  }
+}
+
+function optionalNumber(value: string) {
+  const normalized = value.trim()
+  return normalized ? Number(normalized) : null
+}
+
+function parseProfileList(value: string) {
+  return [...new Set(value.split(/[\n,，]/)
+    .map(item => item.trim())
+    .filter(Boolean))]
+}
+
 async function logout() {
   if (loggingOut.value) return
   loggingOut.value = true
@@ -471,6 +599,7 @@ async function leaveForLogin() {
           @click="sidebarOpen = !sidebarOpen"
         >会话</button>
         <span class="patient-name">{{ session.name }}</span>
+        <button class="profile-button" :disabled="profileSaving" @click="openProfile">画像</button>
         <button class="new-chat-button" :disabled="sending" @click="resetConversation">新对话</button>
         <button class="logout-button" :disabled="loggingOut" @click="logout">
           {{ loggingOut ? '正在退出…' : '退出登录' }}
@@ -713,6 +842,111 @@ async function leaveForLogin() {
         </div>
         <p class="medical-disclaimer">完整聊天记录保存在 Redis；模型每次只读取当前对话最近 20 条消息。回答不能替代医生诊断；紧急情况请立即拨打 120。</p>
       </footer>
+      </section>
+    </div>
+
+    <div v-if="profileOpen" class="modal-backdrop" @click.self="closeProfile">
+      <section class="modal-card profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-title">
+        <header class="modal-header">
+          <div>
+            <span>USER PROFILE</span>
+            <h2 id="profile-title">我的用户画像</h2>
+          </div>
+          <button class="modal-close" :disabled="profileSaving" aria-label="关闭" @click="closeProfile">×</button>
+        </header>
+        <div v-if="profileLoading" class="profile-loading">正在加载画像…</div>
+        <form v-else class="profile-form" @submit.prevent="saveProfile">
+          <p>这些信息跨对话生效。健康信息属于你的自述，不是医院确认病历，也不会替代 Healthy 的实时数据。</p>
+          <section class="profile-section">
+            <h3>使用偏好</h3>
+            <div class="profile-grid">
+              <label>
+                <span>预约时段偏好</span>
+                <select v-model="appointmentPeriod" :disabled="profileSaving">
+                  <option value="NO_PREFERENCE">无偏好</option>
+                  <option value="MORNING">上午</option>
+                  <option value="AFTERNOON">下午</option>
+                </select>
+              </label>
+              <label>
+                <span>回答风格</span>
+                <select v-model="responseStyle" :disabled="profileSaving">
+                  <option value="DEFAULT">默认</option>
+                  <option value="CONCISE">简洁</option>
+                  <option value="DETAILED">详细</option>
+                </select>
+              </label>
+            </div>
+          </section>
+          <section class="profile-section">
+            <h3>基本健康信息</h3>
+            <div class="profile-grid profile-grid-three">
+              <label>
+                <span>年龄</span>
+                <input v-model="age" type="number" min="0" max="150" placeholder="未填写" :disabled="profileSaving">
+              </label>
+              <label>
+                <span>生理性别</span>
+                <select v-model="sex" :disabled="profileSaving">
+                  <option value="UNKNOWN">未填写</option>
+                  <option value="MALE">男</option>
+                  <option value="FEMALE">女</option>
+                </select>
+              </label>
+              <label>
+                <span>身高（厘米）</span>
+                <input v-model="heightCm" type="number" min="30" max="250" placeholder="未填写" :disabled="profileSaving">
+              </label>
+              <label>
+                <span>体重（千克）</span>
+                <input v-model="weightKg" type="number" min="1" max="500" step="0.1" placeholder="未填写" :disabled="profileSaving">
+              </label>
+              <label>
+                <span>吸烟情况</span>
+                <select v-model="smokingStatus" :disabled="profileSaving">
+                  <option value="UNKNOWN">未填写</option>
+                  <option value="NEVER">从不吸烟</option>
+                  <option value="FORMER">已戒烟</option>
+                  <option value="CURRENT">目前吸烟</option>
+                </select>
+              </label>
+              <label>
+                <span>饮酒情况</span>
+                <select v-model="alcoholStatus" :disabled="profileSaving">
+                  <option value="UNKNOWN">未填写</option>
+                  <option value="NEVER">从不饮酒</option>
+                  <option value="FORMER">已戒酒</option>
+                  <option value="CURRENT">目前饮酒</option>
+                </select>
+              </label>
+            </div>
+          </section>
+          <section class="profile-section">
+            <h3>健康情况</h3>
+            <p class="profile-section-hint">每行填写一项，每类最多 10 项；只填写本人明确知道的信息。</p>
+            <div class="profile-grid">
+              <label>
+                <span>已确诊疾病 / 慢性病</span>
+                <textarea v-model="conditions" rows="4" placeholder="例如：高血压&#10;2型糖尿病" :disabled="profileSaving"></textarea>
+              </label>
+              <label>
+                <span>过敏史</span>
+                <textarea v-model="allergies" rows="4" placeholder="例如：青霉素&#10;花生" :disabled="profileSaving"></textarea>
+              </label>
+              <label class="profile-wide-field">
+                <span>当前用药</span>
+                <textarea v-model="medications" rows="4" placeholder="例如：二甲双胍 500mg 每日2次" :disabled="profileSaving"></textarea>
+              </label>
+            </div>
+          </section>
+          <p v-if="profileError" class="profile-error" role="alert">{{ profileError }}</p>
+          <div class="profile-actions">
+            <button type="button" class="profile-clear" :disabled="profileSaving" @click="clearProfile">清除全部画像</button>
+            <button type="submit" class="profile-save" :disabled="profileSaving">
+              {{ profileSaving ? '正在保存…' : '保存' }}
+            </button>
+          </div>
+        </form>
       </section>
     </div>
   </main>

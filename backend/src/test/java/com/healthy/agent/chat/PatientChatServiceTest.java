@@ -17,6 +17,12 @@ import com.healthy.agent.chat.history.PatientConversationHistoryService;
 import com.healthy.agent.chat.history.PatientConversationSummaryService;
 import com.healthy.agent.chat.history.ConversationMemoryContext;
 import com.healthy.agent.llm.TokenUsage;
+import com.healthy.agent.memory.profile.PatientProfileExtractionResult;
+import com.healthy.agent.memory.profile.PatientProfileExtractionService;
+import com.healthy.agent.memory.profile.PatientProfilePatch;
+import com.healthy.agent.memory.profile.PatientProfileService;
+import com.healthy.agent.memory.profile.ProfileFieldPatch;
+import com.healthy.agent.memory.profile.ProfilePatchOperation;
 import com.healthy.agent.state.AgentStateService;
 import com.healthy.agent.state.Candidate;
 import com.healthy.agent.state.CandidateResultSet;
@@ -83,9 +89,13 @@ class PatientChatServiceTest {
             mock(PatientConversationHistoryService.class);
     private final PatientConversationSummaryService summaryService =
             mock(PatientConversationSummaryService.class);
+    private final PatientProfileService profileService = mock(PatientProfileService.class);
+    private final PatientProfileExtractionService profileExtractionService =
+            mock(PatientProfileExtractionService.class);
     private final PatientChatService service = new PatientChatService(
             chatClient, tools, actionService, stateService,
-            intentRouter, intentToolSelector, properties, historyService, summaryService);
+            intentRouter, intentToolSelector, properties, historyService, summaryService,
+            profileService, profileExtractionService);
 
     @BeforeEach
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -109,6 +119,10 @@ class PatientChatServiceTest {
                 .thenReturn(List.of());
         when(summaryService.prepare(anyString(), any(AgentTraceRecorder.class)))
                 .thenReturn(ConversationMemoryContext.empty());
+        when(profileService.promptSummary(8L)).thenReturn("无已保存偏好");
+        when(profileExtractionService.extract(
+                eq(8L), anyString(), any(AgentTraceRecorder.class)))
+                .thenReturn(PatientProfileExtractionResult.empty());
     }
 
     @Test
@@ -142,6 +156,29 @@ class PatientChatServiceTest {
         verify(historyService).recentModelMessages(SCOPED, 19);
         verify(historyService).appendExchange(
                 8L, CONVERSATION_ID, "查询我的预约", result);
+    }
+
+    @Test
+    void addsProfileExtractionUsageAndAppliesPatchOnlyAfterNewExchangeIsStored() {
+        when(actionService.activeAction(SCOPED)).thenReturn(Optional.empty());
+        when(call.chatResponse()).thenReturn(response(
+                "好的，以后优先提供上午时段。", "deepseek-flash", 100, 20));
+        PatientProfilePatch patch = new PatientProfilePatch(
+                new ProfileFieldPatch(ProfilePatchOperation.SET, "MORNING"),
+                ProfileFieldPatch.keep());
+        when(profileExtractionService.extract(
+                eq(8L), anyString(), any(AgentTraceRecorder.class)))
+                .thenReturn(new PatientProfileExtractionResult(
+                        patch, new TokenUsage(30, 10, 40)));
+        when(historyService.appendExchange(
+                eq(8L), eq(CONVERSATION_ID), anyString(), any(PatientChatResponse.class)))
+                .thenReturn(true);
+
+        PatientChatResponse result = service.answer(
+                "请记住我以后更喜欢上午", "Bearer token", 8L, CONVERSATION_ID);
+
+        assertThat(result.usage().totalTokens()).isEqualTo(160);
+        verify(profileService).applyPatch(8L, patch);
     }
 
     @Test

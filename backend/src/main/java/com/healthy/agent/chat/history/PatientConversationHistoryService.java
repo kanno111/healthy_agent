@@ -347,7 +347,7 @@ public class PatientConversationHistoryService {
         }
     }
 
-    public void appendExchange(
+    public boolean appendExchange(
             long userId,
             String rawConversationId,
             String question,
@@ -368,7 +368,7 @@ public class PatientConversationHistoryService {
         String turnId = persistedResponse.turnId() == null
                 ? UUID.randomUUID().toString() : persistedResponse.turnId();
         try {
-            redis.execute(APPEND_EXCHANGE_SCRIPT, List.of(
+            Long appended = redis.execute(APPEND_EXCHANGE_SCRIPT, List.of(
                             messagesKey(scoped), payloadsKey(scoped), sequenceKey(scoped),
                             metaKey(scoped), userConversationsKey(userId), actionsKey(scoped),
                             turnsKey(scoped)),
@@ -376,6 +376,7 @@ public class PatientConversationHistoryService {
                     assistantMessageId, json(assistantMessage),
                     now.toString(), titleFrom(question), rawConversationId, actionId,
                     turnId, Long.toString(userId), now.toString(), Long.toString(score(now)));
+            return appended != null && appended >= 0L;
         } catch (DataAccessException exception) {
             throw unavailable(exception);
         }

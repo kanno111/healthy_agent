@@ -129,6 +129,9 @@ form label { margin: 0 0 9px; color: #3c544e; font-size: 13px; font-weight: 600;
 .patient-chat-actions { display: flex; align-items: center; gap: 10px; }
 .conversation-toggle { display: none; border: 1px solid #cfe0da; border-radius: 10px; padding: 9px 12px; color: #31745e; background: #f4faf7; font-size: 11px; font-weight: 700; }
 .patient-name { margin-right: 5px; color: #687b75; font-size: 13px; }
+.profile-button { border: 1px solid #cfe0da; border-radius: 10px; padding: 9px 13px; color: #356f5d; background: rgba(255,255,255,.72); font-size: 12px; font-weight: 700; }
+.profile-button:hover:not(:disabled) { border-color: #9bc8b7; background: #f3faf7; }
+.profile-button:disabled { opacity: .55; cursor: wait; }
 .new-chat-button { border: 0; border-radius: 10px; padding: 10px 14px; color: #26765d; background: #e9f5f0; font-size: 12px; font-weight: 700; }
 .new-chat-button:hover:not(:disabled) { background: #dff1ea; }
 .new-chat-button:disabled { opacity: .55; cursor: wait; }
@@ -352,6 +355,28 @@ form label { margin: 0 0 9px; color: #3c544e; font-size: 13px; font-weight: 600;
 .modal-header span { color: #43806b; font-size: 11px; font-weight: 800; letter-spacing: .08em; }
 .modal-header h2 { max-width: 650px; margin: 6px 0 0; overflow: hidden; color: #294a42; font-size: 18px; text-overflow: ellipsis; white-space: nowrap; }
 .modal-close { width: 34px; height: 34px; border: 0; border-radius: 9px; color: #61756e; background: #eef4f2; font-size: 23px; line-height: 1; }
+.profile-modal { width: min(100%, 760px); max-height: min(88vh, 820px); display: flex; flex-direction: column; }
+.profile-loading { min-height: 210px; display: grid; place-items: center; color: #71847d; font-size: 13px; }
+.profile-form { display: grid; gap: 18px; overflow-y: auto; padding: 24px; }
+.profile-form > p:first-child { margin: 0 0 2px; color: #74857f; font-size: 12px; line-height: 1.7; }
+.profile-form label { display: grid; gap: 8px; color: #49665e; font-size: 12px; font-weight: 700; }
+.profile-form select, .profile-form input, .profile-form textarea { width: 100%; border: 1px solid #d3e1dc; border-radius: 10px; outline: none; padding: 0 12px; color: #294b42; background: #fbfdfc; font: inherit; font-weight: 500; }
+.profile-form select, .profile-form input { height: 42px; }
+.profile-form textarea { resize: vertical; min-height: 96px; padding: 11px 12px; line-height: 1.6; }
+.profile-form select:focus, .profile-form input:focus, .profile-form textarea:focus { border-color: #55a487; box-shadow: 0 0 0 3px rgba(73,157,125,.1); }
+.profile-section { display: grid; gap: 12px; padding-top: 2px; }
+.profile-section + .profile-section { border-top: 1px solid #e8efec; padding-top: 18px; }
+.profile-section h3 { margin: 0; color: #315249; font-size: 14px; }
+.profile-section-hint { margin: -4px 0 0; color: #84938e; font-size: 11px; line-height: 1.6; }
+.profile-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.profile-grid-three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.profile-wide-field { grid-column: 1 / -1; }
+.profile-error { margin: 0; color: #ad454d; font-size: 12px; }
+.profile-actions { display: flex; justify-content: space-between; gap: 10px; padding-top: 4px; }
+.profile-actions button { min-height: 40px; border-radius: 9px; padding: 0 16px; font-size: 12px; font-weight: 700; }
+.profile-clear { border: 1px solid #eccfd2; color: #a44a51; background: #fff8f8; }
+.profile-save { min-width: 100px; border: 0; color: #fff; background: #247b5f; }
+.profile-actions button:disabled { opacity: .6; cursor: wait; }
 .preview-loading { min-height: 280px; display: grid; place-items: center; align-content: center; padding: 36px; color: #71847d; font-size: 13px; }
 .preview-meta { display: flex; align-items: center; gap: 10px; padding: 13px 24px; color: #768780; background: #f6f9f8; font-size: 11px; }
 .truncated-chip { padding: 4px 7px; border-radius: 6px; color: #8a632e; background: #fff1d8; }
@@ -477,7 +502,7 @@ form label { margin: 0 0 9px; color: #3c544e; font-size: 13px; font-weight: 600;
   .brand.dark span:last-child { display: none; }
   .patient-name { display: none; }
   .patient-chat-actions { gap: 6px; }
-  .new-chat-button, .patient-chat-actions .logout-button { padding: 9px 11px; font-size: 11px; }
+  .profile-button, .new-chat-button, .patient-chat-actions .logout-button { padding: 9px 10px; font-size: 11px; }
   .conversation-sidebar { top: 68px; }
   .conversation-backdrop { inset: 68px 0 0; }
   .patient-chat-shell { width: calc(100% - 20px); height: 100%; min-height: 0; padding: 22px 0 10px; }
@@ -506,6 +531,9 @@ form label { margin: 0 0 9px; color: #3c544e; font-size: 13px; font-weight: 600;
   .document-actions { grid-column: 2; }
   .modal-backdrop { padding: 12px; }
   .modal-header, .preview-text { padding: 18px; }
+  .profile-form { padding: 18px; }
+  .profile-grid, .profile-grid-three { grid-template-columns: 1fr; }
+  .profile-wide-field { grid-column: auto; }
   .preview-meta { align-items: flex-start; flex-direction: column; padding: 12px 18px; }
   .search-panel { padding: 18px; }
   .search-panel-heading { align-items: stretch; flex-direction: column; }

@@ -1,6 +1,6 @@
 # Healthy Agent 开发进度
 
-最后更新：2026-10-10
+最后更新：2026-10-15
 
 ## 总览
 
@@ -15,6 +15,7 @@
 | 6. 写操作确认 | 已完成基础版 | 创建/取消预约及加入/取消/确认候补统一支持 actionId、确认/拒绝按钮、执行前复查和重复执行防护 |
 | 7. RAG 知识库 | 进行中 | Vector/BM25 基线、最小 RRF、104 条含多正例的评测集、管理员测试、患者 RAG 及业务 Tool 路由已完成；阈值优化和正式知识开放策略待实现 |
 | 8. Agent Docker 部署 | 已完成基础版 | 前后端、ES、MinIO 已独立编排；Kibana 按需启动 |
+| 9. 结构化用户画像 | 已完成扩展基础版 | Redis 保存偏好、基础健康信息及受限的疾病/过敏/用药列表；每个成功聊天 Turn 尝试提取，患者可查看、修改和清除 |
 
 ## 已完成：双角色登录
 
@@ -346,6 +347,26 @@
 - [x] 参考 Spring AI 官方的“Chat Memory 与完整 Chat History 分离、窗口按完整 turn 淘汰”设计，以及 [LangMem SummarizationNode](https://langchain-ai.github.io/langmem/reference/short_term/) 的“已有滚动摘要 + 剩余最近消息”模式；本项目只用普通 Java、现有 Redis 和 `ChatModelClient` 实现，没有引入 LangGraph、LangMem、向量长期记忆或新的数据库。
 - [x] 当前限制：窗口填满后，每个新增完整回合通常会在下一次提问时增加一次小型摘要 LLM 调用，因此会增加少量延迟和 Token；这是用较早语义上下文换取固定 20 消息窗口的成本。摘要不是审计记录，完整聊天仍以 Redis 原始历史为准。
 
+## 已完成：结构化用户画像
+
+- [x] 当前画像包含预约时段与回答风格，以及 `age`、`sex`、`heightCm`、`weightKg`、`conditions`、`allergies`、`medications`、`smokingStatus`、`alcoholStatus`。疾病、过敏、用药只保存患者明确自述，不根据问题、症状、假设或第三方信息推断。
+- [x] 画像继续使用用户级 Redis HASH `healthy-agent:memory:profile:patient:{userId}`，跨 conversation 生效且不设 TTL；标量和枚举直接保存，三个集合保存为受限 JSON 数组，旧的仅含两个偏好字段的 HASH 可向后读取。画像与会话历史 Key 分离，不使用 ZSET。
+- [x] 每个成功组装的患者聊天 Turn 都用现有低成本模型尝试提取一次补丁；输入仅包含当前画像和本轮用户消息，不读取完整历史、滚动摘要、Assistant 回答、Tool 结果、AgentState 或 Authorization。输出上限调整为 500 Token、温度 0、关闭思考和 Tool。
+- [x] 标量字段使用 `KEEP/SET/CLEAR`，疾病、过敏和用药集合使用 `KEEP/ADD/REMOVE/CLEAR`，避免新增一项时覆盖已有列表。Java 统一校验年龄 0～150、身高 30～250 cm、体重 1～500 kg；每个集合最多 10 项、单项最多 50 字符，并限制可保存字符、去重和标准化空白。
+- [x] 提取失败、非法输出或画像 Redis 写入失败都降级为“不更新画像”，不阻断已经完成的聊天。提取模型的 Token 与耗时进入本轮用量和 Agent Trace，但 Trace 只记录是否产生变更，不记录用户原文或具体偏好值。
+- [x] 画像补丁只在本轮 user/assistant 交换经 Redis Lua 成功落库后应用；`appendExchange` 现在返回是否为首次落库，重复 turn 不重复写画像。PendingAction 是否完成仍只以 Healthy API 与 AgentState 为准，画像不能成为实时业务事实。
+- [x] 主 Patient Agent 每次调用时注入当前非空画像，并明确标记健康字段为“用户自述、未经医院确认、不可信数据”，不得执行其中的指令、替代 Healthy API 或医疗人员判断。意图路由、Query Rewrite、滚动摘要和 RAG 生成不注入画像。
+- [x] 患者本人 `GET/PUT/DELETE /api/agent/patient/profile` 与前端“画像”弹窗已扩展为完整字段；患者可显式编辑、清除全部画像，管理员身份不能访问患者画像接口。
+- [x] 医疗字段边界参考 [HL7 FHIR Patient](https://hl7.org/fhir/patient.html)、[Observation](https://hl7.org/fhir/observation.html)、[Condition](https://hl7.org/fhir/condition.html)、[AllergyIntolerance](https://hl7.org/fhir/allergyintolerance.html) 与 [MedicationStatement](https://hl7.org/fhir/medicationstatement.html) 对人口统计、测量、疾病、过敏和用药的类型区分。本项目只借鉴“不同医疗概念不混成一个自由文本字段”和“保留用户自述边界”，没有照搬完整 FHIR Resource、编码系统、临床确认工作流，也没有增加依赖；Healthy 当前仍未提供这些字段的权威接口。
+- [!] 当前按确认方案每个成功 Turn 都会增加一次小型 LLM 调用。后续先基于真实 Trace 统计命中率、Token 与延迟，再决定是否增加 Java Policy 前置过滤；第一版不提前引入复杂规则或医疗语义分类器。
+
+## 已完成：辛辣食物与常见消化道不适科普资料
+
+- [x] 新增 `test-data/knowledge/25-辛辣食物与常见消化道不适.md`，覆盖“能否吃辣”、烧心和胃食管反流的个人诱因、辛辣食物与消化性溃疡的常见误区、饮食症状记录及就医警示信号；资料只用于一般患者教育，不给出个体化诊断、处方或统一忌口结论。
+- [x] 内容采用“核心结论 → 适用边界 → 常见场景 → 就医边界 → 常见问答 → 来源”的结构，使 1000 字符切块后每个 Chunk 仍保留明确主题；没有修改现有 Chunk 大小、向量模型、最低分阈值、Tool 路由或 RAG 生成逻辑，也没有增加依赖。
+- [x] 资料依据 [NIDDK 胃食管反流饮食说明](https://www.niddk.nih.gov/health-information/digestive-diseases/acid-reflux-ger-gerd-adults/eating-diet-nutrition)、[NIDDK 消化性溃疡饮食说明](https://www.niddk.nih.gov/health-information/digestive-diseases/peptic-ulcers-stomach-ulcers/eating-diet-nutrition)、[NHS 消化健康饮食说明](https://www.nhs.uk/live-well/eat-well/digestive-health/good-foods-to-help-your-digestion/)、[NHS 烧心与反流说明](https://www.nhs.uk/conditions/heartburn-and-acid-reflux/) 和[北京市卫健委转载北京天坛医院“饮食与反流”](https://wjw.beijing.gov.cn/bmfw_20143/jkzs/202110/t20211020_2516494.html)整理；没有把单一来源的表述直接视为个体化医嘱。
+- [x] 新资料已通过当前管理员接口上传到 MinIO/MySQL，并使用 `BAAI/bge-m3` 构建 3 个 Elasticsearch Chunk；没有删除或重建其他文档索引。
+
 ## 工程实现约定
 
 - Agent 架构、Tool Calling、HITL、RAG、Memory、权限和可靠性的重要修改，实施前先参考维护活跃的优秀开源项目或框架官方实现。
@@ -365,6 +386,10 @@
 
 ## 本次验证记录
 
+- “我可以吃辛辣食物吗”真实 Vector 检索 Top 3 均命中新资料的 3 个 Chunk，得分约为 `0.8805`、`0.8549`、`0.7691`；管理员 RAG 返回 3 个该文档引用并生成有依据的回答。
+- 使用隔离本地测试用户完成患者聊天真实链路：意图路由选择 `RAG`，调用 `search_hospital_policy`，最终 3 个引用均来自 `25-辛辣食物与常见消化道不适.md`；测试会话和测试用户画像随后已清理，没有调用 Healthy 查询或写接口。
+- 用户画像健康字段扩展完成后，后端全量 182 项测试通过，0 failures、0 errors、0 skipped；新增覆盖数值/枚举/JSON 集合读取、集合 `ADD/REMOVE` 不覆盖无关字段、非法范围拒绝、扩展补丁解析和画像接口完整字段。前端 `vue-tsc --noEmit` 与 Vite 生产构建成功（44 个模块）。测试使用 Mock Redis/LLM，没有调用真实 DeepSeek、医院查询或医院写接口；疾病、过敏和用药仍仅表示患者自述。
+- 最小用户画像完成后，后端全量 180 项测试通过，0 failures、0 errors、0 skipped；新增覆盖结构化补丁解析、非法输出 fail-open、提取 Token 汇总、聊天落库后才应用画像、Redis 用户隔离与字段级更新、受控 Prompt 文本、患者画像 GET/PUT/DELETE 及管理员越权拒绝。前端 `vue-tsc --noEmit` 与 Vite 生产构建成功（44 个模块）。测试使用 Mock Redis/LLM，没有调用真实 DeepSeek、医院查询或医院写接口。
 - 最小 Query Rewrite 完成后，后端全量 172 项测试通过，0 failures、0 errors、0 skipped；新增覆盖上下文指代改写、零温度与输出预算、模型异常回退、非法输出回退仍统计已消耗 Token、改写句仅用于检索、原问题用于最终回答、无有效 Chunk 时只跳过答案生成，以及 Patient Tool 正确传递会话摘要与最近消息。测试使用 Mock LLM/检索服务，没有调用真实 DeepSeek、Elasticsearch 或医院接口。
 - 超窗滚动摘要完成后，后端全量 169 项测试通过，0 failures、0 errors、0 skipped；新增覆盖完整回合批次边界、增量摘要与 Redis CAS 写入、Bearer 脱敏、摘要失败降级、无超窗时不额外调用模型、摘要注入后的 20 消息窗口、意图路由读取摘要以及摘要 Token 合并统计。测试使用 Mock Redis/LLM，没有调用真实医院查询或写接口。
 - Redis 多会话与对话重命名完成后，全量后端 164 项测试通过，0 failures、0 errors、0 skipped；前端 `vue-tsc --noEmit` 与 Vite 生产构建成功（44 个模块）。最终 9 项会话历史定向测试再次通过，覆盖最近 20 条模型上下文、历史分页游标、跨用户会话拒绝、名称空白/超长校验、手动标题保护、会话删除联动 PendingAction/AgentState，以及 SSE 最终回复只写入一次。
@@ -382,7 +407,7 @@
 - 后端：`BUILD SUCCESS`，133 个测试，0 failures，0 errors；新增覆盖固定评测集加载与校验、BM25 不调用 Embedding、Vector/BM25/HYBRID 策略选择、RRF 跨分支融合与单分支去重、HitRate 与其他检索指标计算和管理员评测接口权限；原有 AgentState、Tool Calling、HITL、RAG、文档管理与权限回归继续通过。
 - 前端：TypeScript 检查和 Vite 生产构建成功，44 个模块完成转换。
 - RAG 阶段 1/2 与最小 RRF 版本已重建并替换前后端容器；后端健康检查返回 `UP`，管理端通过同一页面完成 Vector/BM25/HYBRID 单题检索和固定评测。
-- 编号 05～24 的 20 份新增虚构制度均已通过 Nginx → Agent → MinIO → BGE-M3 → Elasticsearch 真实闭环上传和索引；当前知识库 25 份文档、37 个 chunk 全部已索引。
+- 编号 05～24 的 20 份新增虚构制度与编号 25 的患者科普资料均已通过 Agent → MinIO → BGE-M3 → Elasticsearch 真实闭环上传和索引；当前知识库 26 份文档、40 个 chunk 全部已索引。
 - 104 条真实检索评测未调用聊天生成模型，因此没有产生回答 Token；Vector 与 Hybrid 评测调用 BGE-M3 查询 Embedding，BM25 评测只访问 Elasticsearch。
 - 本轮统一 State 回归全部使用 Mock/本地测试数据，没有创建或取消任何云端真实预约。
 - 针对页面截图中的回归完成运行态核对：截图请求来自 19:38 构建的旧容器，调用轨迹缺少 `select_patient_candidate`。已于 21:20 重建并仅重启 Agent 前后端；后端 `/actuator/health` 返回 HTTP 200，本地开发会话验证无 PendingAction 时输入“算了”由 `server-rule` 零 Tool 返回，不再生成“这次不预约”的模型回答。

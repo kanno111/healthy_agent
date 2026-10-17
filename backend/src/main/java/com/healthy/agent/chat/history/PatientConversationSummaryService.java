@@ -7,6 +7,7 @@ import com.healthy.agent.trace.AgentTraceRecorder;
 import com.healthy.agent.trace.AgentTraceStepType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
@@ -46,6 +47,7 @@ public class PatientConversationSummaryService {
     private final ChatModelClient chatModelClient;
     private final Clock clock;
 
+    @Autowired
     public PatientConversationSummaryService(
             PatientConversationHistoryService historyService,
             ChatModelClient chatModelClient

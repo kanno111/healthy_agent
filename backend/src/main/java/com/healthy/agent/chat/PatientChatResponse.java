@@ -79,6 +79,12 @@ public record PatientChatResponse(
                 value == null ? null : value.turnId(), value);
     }
 
+    public PatientChatResponse withUsage(TokenUsage value) {
+        return new PatientChatResponse(
+                question, answer, mode, model, embeddingModel, citations, value, tools,
+                pendingAction, actionUpdate, turnId, trace);
+    }
+
     public PatientChatResponse withoutTracePayload() {
         return new PatientChatResponse(
                 question, answer, mode, model, embeddingModel, citations, usage, tools,

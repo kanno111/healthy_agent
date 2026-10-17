@@ -13,6 +13,7 @@ public enum AgentErrorCode {
     INVALID_RAG_LIMIT(40017, "RAG 召回数量超出允许范围", HttpStatus.BAD_REQUEST),
     INVALID_CONVERSATION_ID(40018, "会话标识无效，请新建对话后重试", HttpStatus.BAD_REQUEST),
     INVALID_CONVERSATION_TITLE(40019, "对话名称必须为 1 至 60 个字符", HttpStatus.BAD_REQUEST),
+    INVALID_PATIENT_PROFILE(40020, "用户画像设置无效", HttpStatus.BAD_REQUEST),
     ACTION_EXPIRED(40910, "该确认操作已过期，请重新发起", HttpStatus.CONFLICT),
     ACTION_STATE_CONFLICT(40911, "该操作已经处理，不能重复执行", HttpStatus.CONFLICT),
     TOOL_LOOP_LIMIT(42213, "工具调用次数过多，请简化问题后重试", HttpStatus.UNPROCESSABLE_CONTENT),

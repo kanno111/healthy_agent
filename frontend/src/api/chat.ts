@@ -123,6 +123,29 @@ export type ConversationMessagePage = {
   hasMore: boolean
 }
 
+export type AppointmentPeriod = 'MORNING' | 'AFTERNOON' | 'NO_PREFERENCE'
+export type ResponseStyle = 'CONCISE' | 'DETAILED' | 'DEFAULT'
+export type Sex = 'MALE' | 'FEMALE' | 'UNKNOWN'
+export type SmokingStatus = 'NEVER' | 'FORMER' | 'CURRENT' | 'UNKNOWN'
+export type AlcoholStatus = 'NEVER' | 'FORMER' | 'CURRENT' | 'UNKNOWN'
+
+export type PatientProfile = {
+  appointmentPeriod: AppointmentPeriod
+  responseStyle: ResponseStyle
+  age: number | null
+  sex: Sex
+  heightCm: number | null
+  weightKg: number | null
+  conditions: string[]
+  allergies: string[]
+  medications: string[]
+  smokingStatus: SmokingStatus
+  alcoholStatus: AlcoholStatus
+  updatedAt: string | null
+}
+
+export type PatientProfileUpdate = Omit<PatientProfile, 'updatedAt'>
+
 type PatientChatStreamEvent = {
   type: 'delta' | 'trace' | 'complete' | 'error'
   content: string | null
@@ -180,6 +203,34 @@ export async function deletePatientConversation(token: string, conversationId: s
     { method: 'DELETE', headers: agentRequestHeaders(token) }
   )
   return readApiResponse<void>(response, '删除对话失败')
+}
+
+export function getPatientProfile(token: string) {
+  return fetch('/api/agent/patient/profile', {
+    headers: agentRequestHeaders(token)
+  }).then(response => readApiResponse<PatientProfile>(response, '无法加载用户画像'))
+}
+
+export function updatePatientProfile(
+  token: string,
+  profile: PatientProfileUpdate
+) {
+  return fetch('/api/agent/patient/profile', {
+    method: 'PUT',
+    headers: {
+      ...agentRequestHeaders(token),
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(profile)
+  }).then(response => readApiResponse<PatientProfile>(response, '保存用户画像失败'))
+}
+
+export async function deletePatientProfile(token: string) {
+  const response = await fetch('/api/agent/patient/profile', {
+    method: 'DELETE',
+    headers: agentRequestHeaders(token)
+  })
+  return readApiResponse<void>(response, '清除用户画像失败')
 }
 
 async function sendActionDecision(
